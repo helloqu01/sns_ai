@@ -3,24 +3,41 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --port 3002",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "interest:naver": "node scripts/fetch-naver-interest.js"
   },
   "dependencies": {
-    "next": "16.1.6",
+    "@google/generative-ai": "^0.24.1",
+    "fast-xml-parser": "^5.3.6",
+    "firebase-admin": "^12.7.0",
+    "jpeg-js": "^0.4.4",
+    "next": "15.5.12",
+    "pngjs": "^7.0.0",
     "react": "19.2.3",
     "react-dom": "19.2.3"
   },
   "devDependencies": {
+    "@supabase/supabase-js": "^2.95.3",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
+    "@types/pngjs": "^6.0.5",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "clsx": "^2.1.1",
+    "dotenv": "^17.3.1",
     "eslint": "^9",
-    "eslint-config-next": "16.1.6",
+    "eslint-config-next": "15.5.12",
+    "firebase": "^10.14.1",
+    "lucide-react": "^0.571.0",
+    "swiper": "^12.1.1",
+    "tailwind-merge": "^3.4.1",
     "tailwindcss": "^4",
     "typescript": "^5"
+  },
+  "optionalDependencies": {
+    "@next/swc-darwin-arm64": "^15.5.12"
   }
 }

@@ -29,6 +29,13 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+debug_*.json
+debug_*.html
+detail_*.html
+gigs_detail_full.html
+festivals_*.json
+calendar_data.json
+*.tgz
 
 # env files (can opt-in for committing if needed)
 .env*

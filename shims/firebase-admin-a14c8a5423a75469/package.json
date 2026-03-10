@@ -1,0 +1,9 @@
+{
+  "name": "firebase-admin-a14c8a5423a75469",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": {
+    "./app": "./app.js",
+    "./firestore": "./firestore.js"
+  }
+}
