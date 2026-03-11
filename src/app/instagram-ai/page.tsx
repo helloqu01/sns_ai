@@ -5,6 +5,8 @@ import Link from "next/link";
 import {
   CalendarClock,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   ExternalLink,
   Image as ImageIcon,
   Instagram,
@@ -101,6 +103,224 @@ type QueueResponse = {
   error?: string;
 };
 
+type FailureKind = "generation" | "upload";
+type FailureSource = "local" | "queue";
+
+type FailureEvent = {
+  id: string;
+  kind: FailureKind;
+  stage: string;
+  message: string;
+  createdAt: string;
+  source: FailureSource;
+  festivalTitle?: string | null;
+  recordId?: string | null;
+};
+
+type FailureReasonSummary = {
+  key: string;
+  title: string;
+  guide: string;
+  count: number;
+  latestAt: string;
+  latestStage: string;
+  latestMessage: string;
+  latestFestivalTitle: string | null;
+};
+
+type FestivalResearchSnapshot = {
+  ticketPrice?: string;
+  venue?: string;
+  lineup?: string;
+  performanceSchedule?: string;
+  bookingSite?: string;
+  sourceUrl?: string;
+  startDate?: string;
+  endDate?: string;
+  location?: string;
+  price?: string;
+  homepage?: string;
+  description?: string;
+  details?: Array<{ label: string; value: string }>;
+};
+
+type FestivalResearchResultItem = {
+  festivalId?: string;
+  title?: string;
+  status?: "updated" | "unchanged" | "not-found" | "no-match" | "error";
+  searchedAt?: string;
+  updatedFields?: string[];
+  researched?: FestivalResearchSnapshot;
+  message?: string;
+};
+
+type GenerationResearchReport = {
+  festivalId: string;
+  festivalTitle: string;
+  status: "updated" | "unchanged" | "not-found" | "no-match" | "error";
+  searchedAt: string;
+  updatedFields: string[];
+  researched: FestivalResearchSnapshot | null;
+  message: string;
+};
+
+const MAX_LOCAL_FAILURE_EVENTS = 40;
+
+const sanitizeFailureMessage = (value: string | null | undefined) => {
+  if (!value) return "";
+  return value.replace(/\s+/g, " ").trim();
+};
+
+const toTimestamp = (value: string | null | undefined) => {
+  if (!value) return 0;
+  const date = new Date(value);
+  const time = date.getTime();
+  return Number.isNaN(time) ? 0 : time;
+};
+
+const classifyFailureReason = (message: string, kind: FailureKind) => {
+  const normalized = message.toLowerCase();
+
+  if (
+    normalized.includes("unauthorized")
+    || normalized.includes("id token")
+    || normalized.includes("invalid token")
+    || normalized.includes("로그인")
+  ) {
+    return {
+      title: "로그인 인증 문제",
+      guide: "로그인 상태가 만료됐을 수 있습니다. 다시 로그인 후 재시도해주세요.",
+    };
+  }
+
+  if (
+    normalized.includes("quota")
+    || normalized.includes("rate limit")
+    || normalized.includes("resource_exhausted")
+    || normalized.includes("429")
+  ) {
+    return {
+      title: "AI 호출 한도 초과",
+      guide: "생성 요청이 많아 일시 제한되었습니다. 잠시 후 다시 시도해주세요.",
+    };
+  }
+
+  if (
+    normalized.includes("json")
+    || normalized.includes("parse")
+    || normalized.includes("slides array")
+    || normalized.includes("response does not include")
+  ) {
+    return {
+      title: "AI 응답 형식 오류",
+      guide: "AI 출력 형식이 깨졌습니다. 다시 생성하면 대부분 자동 복구됩니다.",
+    };
+  }
+
+  if (
+    normalized.includes("content is required")
+    || normalized.includes("본문 정보가 부족")
+    || normalized.includes("행사 본문 정보")
+  ) {
+    return {
+      title: "입력 데이터 부족",
+      guide: "행사 본문/설명 데이터를 더 채운 뒤 다시 생성해주세요.",
+    };
+  }
+
+  if (
+    normalized.includes("caption is required")
+    || normalized.includes("게시할 캡션")
+    || normalized.includes("캡션을 입력")
+  ) {
+    return {
+      title: "캡션 누락",
+      guide: "업로드 전에 캡션을 입력하거나 AI 캡션 생성을 먼저 실행해주세요.",
+    };
+  }
+
+  if (
+    normalized.includes("imageurl")
+    || normalized.includes("포스터 이미지")
+    || normalized.includes("image url")
+    || normalized.includes("valid image")
+  ) {
+    return {
+      title: "이미지 설정 오류",
+      guide: "게시 이미지 URL 또는 포스터 이미지가 유효한지 확인해주세요.",
+    };
+  }
+
+  if (
+    normalized.includes("scheduledfor must be a future datetime")
+    || normalized.includes("예약 시각은 현재보다 미래")
+    || normalized.includes("future datetime")
+  ) {
+    return {
+      title: "예약 시간 오류",
+      guide: "현재 시각 이후의 예약 시간을 다시 지정해주세요.",
+    };
+  }
+
+  if (
+    normalized.includes("permission")
+    || normalized.includes("oauth")
+    || normalized.includes("권한")
+    || normalized.includes("연결")
+  ) {
+    return {
+      title: "계정 권한/연동 오류",
+      guide: "사이드바에서 계정 연결 상태와 권한 승인을 다시 확인해주세요.",
+    };
+  }
+
+  return kind === "generation"
+    ? {
+      title: "게시글 생성 실패",
+      guide: "입력 데이터를 확인하고 다시 생성해보세요.",
+    }
+    : {
+      title: "업로드 처리 실패",
+      guide: "게시 계정 연결 상태를 확인한 뒤 다시 업로드해주세요.",
+    };
+};
+
+const summarizeFailureReasons = (events: FailureEvent[]) => {
+  const buckets = new Map<string, FailureReasonSummary>();
+
+  for (const event of events) {
+    const reason = classifyFailureReason(event.message, event.kind);
+    const key = `${event.kind}:${reason.title}`;
+    const prev = buckets.get(key);
+    if (!prev) {
+      buckets.set(key, {
+        key,
+        title: reason.title,
+        guide: reason.guide,
+        count: 1,
+        latestAt: event.createdAt,
+        latestStage: event.stage,
+        latestMessage: event.message,
+        latestFestivalTitle: event.festivalTitle || null,
+      });
+      continue;
+    }
+
+    prev.count += 1;
+    if (toTimestamp(event.createdAt) > toTimestamp(prev.latestAt)) {
+      prev.latestAt = event.createdAt;
+      prev.latestStage = event.stage;
+      prev.latestMessage = event.message;
+      prev.latestFestivalTitle = event.festivalTitle || null;
+    }
+  }
+
+  return Array.from(buckets.values()).sort((a, b) => {
+    if (b.count !== a.count) return b.count - a.count;
+    return toTimestamp(b.latestAt) - toTimestamp(a.latestAt);
+  });
+};
+
 const toDateTimeLocalValue = (date: Date) => {
   const offset = date.getTimezoneOffset();
   const localDate = new Date(date.getTime() - offset * 60_000);
@@ -160,6 +380,58 @@ const buildFestivalPlanContent = (festival: UnifiedFestival) => {
     festival.homepage ? `홈페이지: ${festival.homepage}` : null,
     detailLines.length > 0 ? `추가 정보:\n${detailLines.join("\n")}` : null,
   ].filter(Boolean).join("\n");
+};
+
+const mergeFestivalForGeneration = (base: UnifiedFestival, incoming: UnifiedFestival | null): UnifiedFestival => {
+  if (!incoming) return base;
+  return {
+    ...base,
+    ...incoming,
+    imageUrl: incoming.imageUrl || base.imageUrl,
+    sourceLabel: incoming.sourceLabel || base.sourceLabel || base.source,
+    details: Array.isArray(incoming.details) && incoming.details.length > 0 ? incoming.details : base.details,
+    description: incoming.description || base.description,
+    lineup: incoming.lineup || base.lineup,
+    price: incoming.price || base.price,
+    homepage: incoming.homepage || base.homepage,
+    contact: incoming.contact || base.contact,
+  };
+};
+
+const RESEARCH_STATUS_LABEL: Record<GenerationResearchReport["status"], string> = {
+  updated: "반영 완료",
+  unchanged: "변경 없음",
+  "no-match": "자료 미탐색",
+  "not-found": "대상 없음",
+  error: "오류",
+};
+
+const RESEARCH_STATUS_TONE: Record<GenerationResearchReport["status"], string> = {
+  updated: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  unchanged: "border-slate-200 bg-slate-100 text-slate-700",
+  "no-match": "border-amber-200 bg-amber-50 text-amber-700",
+  "not-found": "border-violet-200 bg-violet-50 text-violet-700",
+  error: "border-rose-200 bg-rose-50 text-rose-700",
+};
+
+const RESEARCH_FIELD_LABEL: Record<string, string> = {
+  ticketPrice: "티켓 가격",
+  venue: "공연 장소",
+  performanceSchedule: "공연 일정",
+  bookingSite: "예매처",
+  location: "장소",
+  startDate: "시작일",
+  endDate: "종료일",
+  description: "행사 소개",
+  lineup: "라인업",
+  price: "티켓 가격",
+  homepage: "홈페이지",
+  details: "상세 정보",
+  sourceUrl: "원문 링크",
+  publishedDate: "게시일",
+  publishedAt: "게시 시각",
+  imageUrl: "이미지",
+  genre: "장르",
 };
 
 const statusLabelMap: Record<InstagramPublishingRecord["status"], string> = {
@@ -342,6 +614,10 @@ export default function InstagramAiPage() {
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [stickyErrorMessage, setStickyErrorMessage] = useState<string | null>(null);
+  const [latestResearchReport, setLatestResearchReport] = useState<GenerationResearchReport | null>(null);
+  const [isResearchReportOpen, setIsResearchReportOpen] = useState(true);
+  const [localFailureEvents, setLocalFailureEvents] = useState<FailureEvent[]>([]);
+  const [isFailureDetailsOpen, setIsFailureDetailsOpen] = useState(false);
   const [queueStatusFilter, setQueueStatusFilter] = useState<QueueStatusFilter>("all");
   const [queueModeFilter, setQueueModeFilter] = useState<QueueModeFilter>("all");
   const [queuePage, setQueuePage] = useState(1);
@@ -365,6 +641,7 @@ export default function InstagramAiPage() {
   const [recentPostsLoading, setRecentPostsLoading] = useState(false);
   const [selectedSavedCardnewsId, setSelectedSavedCardnewsId] = useState<string | null>(null);
   const initializedUserRef = useRef<string | null>(null);
+  const failureCardRef = useRef<HTMLElement | null>(null);
 
   const selectedFestival = useMemo(
     () => {
@@ -390,6 +667,34 @@ export default function InstagramAiPage() {
     },
     [user],
   );
+
+  const registerFailureEvent = useCallback((event: {
+    kind: FailureKind;
+    stage: string;
+    message: string;
+    festivalTitle?: string | null;
+    source?: FailureSource;
+    recordId?: string | null;
+    createdAt?: string;
+  }) => {
+    const normalizedMessage = sanitizeFailureMessage(event.message);
+    if (!normalizedMessage) return;
+    const now = event.createdAt || new Date().toISOString();
+    const id = `${event.kind}-${now}-${Math.random().toString(36).slice(2, 8)}`;
+    setLocalFailureEvents((prev) => [
+      {
+        id,
+        kind: event.kind,
+        stage: event.stage,
+        message: normalizedMessage,
+        createdAt: now,
+        source: event.source || "local",
+        festivalTitle: event.festivalTitle || null,
+        recordId: event.recordId || null,
+      },
+      ...prev,
+    ].slice(0, MAX_LOCAL_FAILURE_EVENTS));
+  }, []);
 
   const fetchFestivals = useCallback(async () => {
     if (createMode && fixedFestivalData) {
@@ -446,6 +751,94 @@ export default function InstagramAiPage() {
       setFestivalsLoading(false);
     }
   }, [createMode, fixedFestivalData]);
+
+  const researchFestivalForGeneration = useCallback(async (festival: UnifiedFestival) => {
+    const requestStartedAt = new Date().toISOString();
+
+    try {
+      const updateRes = await fetch("/api/festivals/research", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ festivalIds: [festival.id] }),
+      });
+
+      const updateData = (await updateRes.json().catch(() => ({}))) as {
+        error?: string;
+        results?: FestivalResearchResultItem[];
+      };
+
+      if (!updateRes.ok) {
+        throw new Error(updateData.error || "행사 자료 조사에 실패했습니다.");
+      }
+
+      const researchResult = Array.isArray(updateData.results) ? updateData.results[0] : null;
+      if (researchResult?.status === "error") {
+        throw new Error(researchResult.message || "행사 자료 조사 중 오류가 발생했습니다.");
+      }
+
+      if (researchResult?.status === "no-match" || researchResult?.status === "not-found") {
+        const notice = researchResult.message || "추가 자료를 찾지 못해 기존 행사 정보로 생성합니다.";
+        setLatestResearchReport({
+          festivalId: festival.id,
+          festivalTitle: festival.title,
+          status: researchResult.status,
+          searchedAt: researchResult.searchedAt || requestStartedAt,
+          updatedFields: Array.isArray(researchResult.updatedFields) ? researchResult.updatedFields : [],
+          researched: researchResult.researched || null,
+          message: notice,
+        });
+        setIsResearchReportOpen(true);
+        setStickyErrorMessage(notice);
+        registerFailureEvent({
+          kind: "generation",
+          stage: "행사 자료 조사",
+          message: notice,
+          festivalTitle: festival.title,
+        });
+        return festival;
+      }
+
+      const refreshedPayload = await fetchFestivalsFromApi({ refresh: true, refreshMode: "replace" });
+      const refreshedFestival = refreshedPayload.festivals.find((item) => item.id === festival.id) ?? null;
+      const mergedFestival = mergeFestivalForGeneration(festival, refreshedFestival);
+      const nextStatus = researchResult?.status === "updated" ? "updated" : "unchanged";
+      const nextMessage = researchResult?.message
+        || (nextStatus === "updated"
+          ? "Gemini 조사 결과를 반영해 행사 정보를 보강했습니다."
+          : "Gemini 조사 결과를 확인했지만 기존 정보와 차이가 거의 없었습니다.");
+      setLatestResearchReport({
+        festivalId: festival.id,
+        festivalTitle: festival.title,
+        status: nextStatus,
+        searchedAt: researchResult?.searchedAt || requestStartedAt,
+        updatedFields: Array.isArray(researchResult?.updatedFields) ? researchResult.updatedFields : [],
+        researched: researchResult?.researched || null,
+        message: nextMessage,
+      });
+      setIsResearchReportOpen(true);
+      return mergedFestival;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "행사 자료 조사 중 오류가 발생했습니다.";
+      setLatestResearchReport({
+        festivalId: festival.id,
+        festivalTitle: festival.title,
+        status: "error",
+        searchedAt: requestStartedAt,
+        updatedFields: [],
+        researched: null,
+        message,
+      });
+      setIsResearchReportOpen(true);
+      setStickyErrorMessage(message);
+      registerFailureEvent({
+        kind: "generation",
+        stage: "행사 자료 조사",
+        message,
+        festivalTitle: festival.title,
+      });
+      return festival;
+    }
+  }, [registerFailureEvent]);
 
   const fetchStatus = useCallback(async () => {
     if (!user) {
@@ -787,7 +1180,13 @@ export default function InstagramAiPage() {
 
   const handleGenerateCaption = useCallback(async () => {
     if (!selectedFestival) {
-      setErrorMessage("캡션을 만들 행사 데이터를 먼저 선택해주세요.");
+      const nextMessage = "캡션을 만들 행사 데이터를 먼저 선택해주세요.";
+      setErrorMessage(nextMessage);
+      registerFailureEvent({
+        kind: "generation",
+        stage: "AI 캡션 생성",
+        message: nextMessage,
+      });
       return;
     }
 
@@ -813,11 +1212,18 @@ export default function InstagramAiPage() {
       setFeedbackMessage("AI 캡션을 생성했습니다.");
     } catch (error) {
       console.error(error);
-      setErrorMessage(error instanceof Error ? error.message : "AI 캡션 생성에 실패했습니다.");
+      const nextMessage = error instanceof Error ? error.message : "AI 캡션 생성에 실패했습니다.";
+      setErrorMessage(nextMessage);
+      registerFailureEvent({
+        kind: "generation",
+        stage: "AI 캡션 생성",
+        message: nextMessage,
+        festivalTitle: selectedFestival?.title || null,
+      });
     } finally {
       setIsCaptionGenerating(false);
     }
-  }, [captionStyle, captionTone, selectedFestival]);
+  }, [captionStyle, captionTone, registerFailureEvent, selectedFestival]);
 
   const handleGeneratePlanAndCaption = useCallback(async () => {
     if (!user) {
@@ -825,21 +1231,29 @@ export default function InstagramAiPage() {
       return;
     }
     if (!selectedFestival) {
-      setErrorMessage("기획안을 생성할 행사 정보를 찾지 못했습니다.");
-      return;
-    }
-
-    const content = buildFestivalPlanContent(selectedFestival);
-    if (!content.trim()) {
-      setErrorMessage("행사 본문 정보가 부족해서 기획안을 생성할 수 없습니다.");
+      const nextMessage = "기획안을 생성할 행사 정보를 찾지 못했습니다.";
+      setErrorMessage(nextMessage);
+      registerFailureEvent({
+        kind: "generation",
+        stage: "기획안+캡션 생성",
+        message: nextMessage,
+      });
       return;
     }
 
     setIsPlanGenerating(true);
     setErrorMessage(null);
     setFeedbackMessage(null);
+    setLatestResearchReport(null);
 
     try {
+      setFeedbackMessage("선택한 행사 자료를 조사하고 있습니다...");
+      const festivalForGeneration = await researchFestivalForGeneration(selectedFestival);
+      const content = buildFestivalPlanContent(festivalForGeneration);
+      if (!content.trim()) {
+        throw new Error("행사 본문 정보가 부족해서 기획안을 생성할 수 없습니다.");
+      }
+
       const headers = await buildAuthHeaders(true);
       const res = await fetch("/api/generate-slides", {
         method: "POST",
@@ -849,10 +1263,10 @@ export default function InstagramAiPage() {
           style: planStyle,
           target: planTarget,
           aspectRatio: planAspectRatio,
-          genre: selectedFestival.genre,
-          source: selectedFestival.source,
-          sourceLabel: selectedFestival.sourceLabel || selectedFestival.source,
-          imageUrl: selectedFestival.imageUrl,
+          genre: festivalForGeneration.genre,
+          source: festivalForGeneration.source,
+          sourceLabel: festivalForGeneration.sourceLabel || festivalForGeneration.source,
+          imageUrl: festivalForGeneration.imageUrl,
           slideCount: planSlideCount,
           tone: captionTone,
           captionStyle,
@@ -863,6 +1277,7 @@ export default function InstagramAiPage() {
         slides?: Array<Record<string, unknown>>;
         caption?: string;
         draftId?: string | null;
+        validationIssues?: string[];
         error?: string;
       };
 
@@ -880,12 +1295,12 @@ export default function InstagramAiPage() {
             : (typeof slide.content === "string" ? slide.content : "");
           const image = typeof slide.image === "string" && slide.image.trim()
             ? slide.image
-            : (index === 0 ? selectedFestival.imageUrl : undefined);
+            : (index === 0 ? festivalForGeneration.imageUrl : undefined);
           const renderedImageUrl = typeof slide.renderedImageUrl === "string" && slide.renderedImageUrl.trim()
             ? slide.renderedImageUrl.trim()
             : undefined;
           return {
-            id: `${selectedFestival.id}-${index + 1}`,
+            id: `${festivalForGeneration.id}-${index + 1}`,
             title,
             body,
             image,
@@ -902,10 +1317,32 @@ export default function InstagramAiPage() {
       if (typeof data.draftId === "string" && data.draftId.trim().length > 0) {
         setSelectedSavedCardnewsId(data.draftId);
       }
-      setFeedbackMessage("기획안과 캡션을 생성했습니다.");
+      const validationIssues = Array.isArray(data.validationIssues)
+        ? data.validationIssues
+            .map((issue) => sanitizeFailureMessage(typeof issue === "string" ? issue : null))
+            .filter((issue): issue is string => Boolean(issue))
+        : [];
+      if (validationIssues.length > 0) {
+        const summary = validationIssues.slice(0, 3).join(" / ");
+        registerFailureEvent({
+          kind: "generation",
+          stage: "기획안 생성 보정",
+          message: summary,
+          festivalTitle: festivalForGeneration.title,
+        });
+        setStickyErrorMessage(`AI 보정 이슈: ${summary}`);
+      }
+      setFeedbackMessage("행사 자료 조사 후 기획안과 캡션을 생성했습니다.");
     } catch (error) {
       console.error(error);
-      setErrorMessage(error instanceof Error ? error.message : "기획안 생성에 실패했습니다.");
+      const nextMessage = error instanceof Error ? error.message : "기획안 생성에 실패했습니다.";
+      setErrorMessage(nextMessage);
+      registerFailureEvent({
+        kind: "generation",
+        stage: "기획안+캡션 생성",
+        message: nextMessage,
+        festivalTitle: selectedFestival?.title || null,
+      });
     } finally {
       setIsPlanGenerating(false);
     }
@@ -917,6 +1354,8 @@ export default function InstagramAiPage() {
     planSlideCount,
     planStyle,
     planTarget,
+    registerFailureEvent,
+    researchFestivalForGeneration,
     selectedFestival,
     user,
   ]);
@@ -953,20 +1392,31 @@ export default function InstagramAiPage() {
 
   const submitPublishing = useCallback(
     async (mode: "now" | "schedule") => {
+      const stageLabel = mode === "now" ? "즉시 게시" : "예약 게시";
+      const reportUploadFailure = (message: string) => {
+        setErrorMessage(message);
+        registerFailureEvent({
+          kind: "upload",
+          stage: stageLabel,
+          message,
+          festivalTitle: selectedFestival?.title || null,
+        });
+      };
+
       if (!user) {
         window.location.href = "/login";
         return;
       }
       if (!isConnected || !selectionInfo?.igUserId) {
-        setErrorMessage("인스타그램 계정 연결/전환은 사이드바의 연결 계정에서 설정해주세요.");
+        reportUploadFailure("인스타그램 계정 연결/전환은 사이드바의 연결 계정에서 설정해주세요.");
         return;
       }
       if (!selectedFestival?.imageUrl) {
-        setErrorMessage("게시에 사용할 포스터 이미지가 없는 행사입니다.");
+        reportUploadFailure("게시에 사용할 포스터 이미지가 없는 행사입니다.");
         return;
       }
       if (!captionText.trim()) {
-        setErrorMessage("게시할 캡션을 입력해주세요.");
+        reportUploadFailure("게시할 캡션을 입력해주세요.");
         return;
       }
 
@@ -980,7 +1430,7 @@ export default function InstagramAiPage() {
           : null;
 
       if (mode === "schedule" && (!scheduledForIso || new Date(scheduledForIso).getTime() <= Date.now())) {
-        setErrorMessage("예약 시각은 현재보다 미래여야 합니다.");
+        reportUploadFailure("예약 시각은 현재보다 미래여야 합니다.");
         return;
       }
 
@@ -1056,7 +1506,8 @@ export default function InstagramAiPage() {
           if (data.post?.status === "published") {
             setFeedbackMessage("인스타그램에 즉시 게시했습니다.");
           } else if (data.post?.status === "failed") {
-            setErrorMessage(data.post.lastError || "인스타그램 게시에 실패했습니다.");
+            const failureMessage = data.post.lastError || "인스타그램 게시에 실패했습니다.";
+            reportUploadFailure(failureMessage);
           } else {
             setFeedbackMessage("게시 요청을 접수했습니다.");
           }
@@ -1067,7 +1518,8 @@ export default function InstagramAiPage() {
         await refreshAutomationData();
       } catch (error) {
         console.error(error);
-        setErrorMessage(error instanceof Error ? error.message : "게시 요청에 실패했습니다.");
+        const nextMessage = error instanceof Error ? error.message : "게시 요청에 실패했습니다.";
+        reportUploadFailure(nextMessage);
       } finally {
         setIsPublishingNow(false);
         setIsScheduling(false);
@@ -1080,6 +1532,7 @@ export default function InstagramAiPage() {
       createMode,
       generatedPlanSlides,
       isConnected,
+      registerFailureEvent,
       refreshAutomationData,
       scheduleAt,
       selectedFestival,
@@ -1134,6 +1587,34 @@ export default function InstagramAiPage() {
   }, [errorMessage]);
 
   useEffect(() => {
+    if (!isFailureDetailsOpen) return;
+
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      if (!failureCardRef.current) return;
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (!failureCardRef.current.contains(target)) {
+        setIsFailureDetailsOpen(false);
+      }
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsFailureDetailsOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("touchstart", handlePointerDown);
+    window.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("touchstart", handlePointerDown);
+      window.removeEventListener("keydown", handleEscape);
+    };
+  }, [isFailureDetailsOpen]);
+
+  useEffect(() => {
     if (authLoading) return;
 
     if (!user) {
@@ -1157,6 +1638,8 @@ export default function InstagramAiPage() {
       setGeneratedPlanSlidesDirty(false);
       setIsPlanGenerating(false);
       setStickyErrorMessage(null);
+      setLocalFailureEvents([]);
+      setIsFailureDetailsOpen(false);
       return;
     }
 
@@ -1167,6 +1650,8 @@ export default function InstagramAiPage() {
     setQueueStatusFilter("all");
     setQueueModeFilter("all");
     setQueuePage(1);
+    setLocalFailureEvents([]);
+    setIsFailureDetailsOpen(false);
     void Promise.all([
       fetchFestivals(),
       fetchQueue({ page: 1, status: "all", mode: "all" }),
@@ -1210,6 +1695,14 @@ export default function InstagramAiPage() {
     || pages[0]?.name
     || (pagesLoading ? "연결 계정을 확인하는 중입니다." : "연결된 계정 없음");
 
+  const connectedIgUsername = (selectionInfo?.igUsername || pages[0]?.igUsername || "").replace(/^@/, "").trim();
+  const connectedInstagramUrl = connectedIgUsername
+    ? `https://www.instagram.com/${encodeURIComponent(connectedIgUsername)}/`
+    : null;
+  const connectedInstagramIconLabel = connectedIgUsername
+    ? `@${connectedIgUsername} 인스타그램 프로필 열기`
+    : "인스타그램 열기";
+
   const previewAccountName = (selectionInfo?.igUsername
     || pages[0]?.igUsername
     || selectionInfo?.pageName
@@ -1217,6 +1710,60 @@ export default function InstagramAiPage() {
     || "instagram_account").replace(/^@/, "");
 
   const latestPublished = queue.find((item) => item.status === "published") ?? null;
+  const queueUploadFailureEvents = useMemo<FailureEvent[]>(
+    () => queue
+      .filter((item) => item.status === "failed")
+      .map((item) => ({
+        id: `queue-${item.id}`,
+        kind: "upload",
+        stage: item.publishMode === "scheduled" ? "예약 게시" : "즉시 게시",
+        message: sanitizeFailureMessage(item.lastError || "인스타그램 업로드 처리 중 오류가 발생했습니다."),
+        createdAt: item.failedAt || item.updatedAt || item.createdAt || new Date().toISOString(),
+        source: "queue",
+        festivalTitle: item.festivalTitle || null,
+        recordId: item.id,
+      })),
+    [queue],
+  );
+
+  const generationFailureEvents = useMemo(
+    () => localFailureEvents
+      .filter((event) => event.kind === "generation")
+      .sort((a, b) => toTimestamp(b.createdAt) - toTimestamp(a.createdAt))
+      .slice(0, 20),
+    [localFailureEvents],
+  );
+
+  const uploadFailureEvents = useMemo(() => {
+    const merged = [
+      ...localFailureEvents.filter((event) => event.kind === "upload"),
+      ...queueUploadFailureEvents,
+    ];
+    return merged
+      .filter((event) => Boolean(sanitizeFailureMessage(event.message)))
+      .sort((a, b) => toTimestamp(b.createdAt) - toTimestamp(a.createdAt))
+      .slice(0, 20);
+  }, [localFailureEvents, queueUploadFailureEvents]);
+
+  const generationFailureSummaries = useMemo(
+    () => summarizeFailureReasons(generationFailureEvents).slice(0, 4),
+    [generationFailureEvents],
+  );
+  const uploadFailureSummaries = useMemo(
+    () => summarizeFailureReasons(uploadFailureEvents).slice(0, 4),
+    [uploadFailureEvents],
+  );
+
+  const latestFailureEvent = useMemo(() => {
+    const combined = [...generationFailureEvents, ...uploadFailureEvents];
+    if (combined.length === 0) return null;
+    return combined.sort((a, b) => toTimestamp(b.createdAt) - toTimestamp(a.createdAt))[0];
+  }, [generationFailureEvents, uploadFailureEvents]);
+
+  const latestFailureReason = latestFailureEvent
+    ? classifyFailureReason(latestFailureEvent.message, latestFailureEvent.kind)
+    : null;
+  const totalFailureCount = generationFailureEvents.length + uploadFailureEvents.length;
 
   return (
     <div className="max-w-[1400px] mx-auto min-h-screen pb-20">
@@ -1248,44 +1795,178 @@ export default function InstagramAiPage() {
       <div className="mb-8 grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-5">
         {[
           {
+            key: "connection",
             label: "연결 상태",
             value: isConnected ? "연결됨" : "미연결",
             icon: Link2,
             tone: isConnected ? "text-emerald-600 bg-emerald-50" : "text-slate-500 bg-slate-100",
           },
           {
+            key: "account",
             label: "게시 계정",
-            value: selectionInfo?.igUsername ? `@${selectionInfo.igUsername}` : selectionInfo?.pageName || "-",
+            value: connectedAccountLabel,
             icon: Instagram,
             tone: "text-pink-600 bg-pink-50",
+            iconHref: connectedInstagramUrl,
+            iconLabel: connectedInstagramIconLabel,
           },
           {
+            key: "scheduled",
             label: "예약 게시",
             value: String(queueCounts.scheduled),
             icon: CalendarClock,
             tone: "text-amber-600 bg-amber-50",
           },
           {
+            key: "published",
             label: "게시 완료",
             value: String(queueCounts.published),
             icon: CheckCircle2,
             tone: "text-emerald-600 bg-emerald-50",
           },
           {
+            key: "failure",
             label: "실패/오류",
             value: String(queueCounts.failed),
             icon: AlertTriangle,
             tone: "text-rose-600 bg-rose-50",
+            isFailureCard: true,
           },
-        ].map((item) => (
-          <section key={item.label} className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm">
-            <div className={cn("mb-4 flex h-12 w-12 items-center justify-center rounded-2xl", item.tone)}>
-              <item.icon className="h-5 w-5" />
-            </div>
-            <div className="text-[11px] font-black uppercase tracking-widest text-slate-400">{item.label}</div>
-            <div className="mt-2 text-2xl font-black text-slate-900">{item.value}</div>
-          </section>
-        ))}
+        ].map((item) => {
+          const isFailureCard = Boolean(item.isFailureCard);
+          return (
+            <section
+              key={item.key}
+              ref={isFailureCard ? failureCardRef : undefined}
+              className={cn("rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm", isFailureCard && "relative")}
+            >
+              {item.iconHref ? (
+                <a
+                  href={item.iconHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={item.iconLabel}
+                  title={item.iconLabel}
+                  className={cn(
+                    "mb-4 flex h-12 w-12 items-center justify-center rounded-2xl transition hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-300 focus-visible:ring-offset-2",
+                    item.tone,
+                  )}
+                >
+                  <item.icon className="h-5 w-5" />
+                </a>
+              ) : (
+                <div className={cn("mb-4 flex h-12 w-12 items-center justify-center rounded-2xl", item.tone)}>
+                  <item.icon className="h-5 w-5" />
+                </div>
+              )}
+              <div className="text-[11px] font-black uppercase tracking-widest text-slate-400">{item.label}</div>
+              <div className="mt-2 flex items-end justify-between gap-2">
+                <div className="text-2xl font-black text-slate-900">{item.value}</div>
+                {isFailureCard && (
+                  <button
+                    type="button"
+                    onClick={() => setIsFailureDetailsOpen((prev) => !prev)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-[10px] font-black text-rose-700 transition hover:bg-rose-100"
+                    aria-expanded={isFailureDetailsOpen}
+                    aria-label={isFailureDetailsOpen ? "실패 원인 상세 닫기" : "실패 원인 상세 열기"}
+                  >
+                    원인 보기
+                    {isFailureDetailsOpen ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                  </button>
+                )}
+              </div>
+
+              {isFailureCard && isFailureDetailsOpen && (
+                <div className="absolute left-0 right-0 top-full z-40 mt-3 rounded-[1.4rem] border border-rose-200 bg-white p-4 shadow-[0_24px_70px_rgba(15,23,42,0.2)] xl:left-auto xl:w-[460px]">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-[10px] font-black uppercase tracking-widest text-rose-500">실패 원인 상세</div>
+                      <p className="mt-1 text-sm font-black text-slate-900">최근 실패 {totalFailureCount}건</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsFailureDetailsOpen(false)}
+                      className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[10px] font-black text-slate-600 hover:bg-slate-50"
+                    >
+                      닫기
+                    </button>
+                  </div>
+
+                  <div className="mt-3 space-y-3">
+                    <article className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs font-black text-slate-900">게시글 생성 실패</p>
+                        <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black text-slate-700">
+                          {generationFailureEvents.length}건
+                        </span>
+                      </div>
+                      {generationFailureSummaries.length === 0 ? (
+                        <p className="mt-2 text-[11px] font-bold text-slate-500">최근 생성 실패가 없습니다.</p>
+                      ) : (
+                        <div className="mt-2 space-y-2">
+                          {generationFailureSummaries.map((summary) => (
+                            <div key={summary.key} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="text-[11px] font-black text-slate-900">{summary.title}</p>
+                                <span className="text-[10px] font-black text-slate-500">{summary.count}건</span>
+                              </div>
+                              <p className="mt-1 text-[11px] font-bold text-slate-500">{summary.guide}</p>
+                              <p className="mt-1 text-[10px] font-bold text-slate-400">
+                                최근 {formatDateTime(summary.latestAt)}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </article>
+
+                    <article className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs font-black text-slate-900">업로드/발행 실패</p>
+                        <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black text-slate-700">
+                          {uploadFailureEvents.length}건
+                        </span>
+                      </div>
+                      {uploadFailureSummaries.length === 0 ? (
+                        <p className="mt-2 text-[11px] font-bold text-slate-500">최근 업로드 실패가 없습니다.</p>
+                      ) : (
+                        <div className="mt-2 space-y-2">
+                          {uploadFailureSummaries.map((summary) => (
+                            <div key={summary.key} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="text-[11px] font-black text-slate-900">{summary.title}</p>
+                                <span className="text-[10px] font-black text-slate-500">{summary.count}건</span>
+                              </div>
+                              <p className="mt-1 text-[11px] font-bold text-slate-500">{summary.guide}</p>
+                              <p className="mt-1 text-[10px] font-bold text-slate-400">
+                                최근 {formatDateTime(summary.latestAt)}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </article>
+
+                    {latestFailureEvent && latestFailureReason && (
+                      <div className="rounded-xl border border-rose-100 bg-rose-50 px-3 py-3">
+                        <div className="text-[10px] font-black uppercase tracking-widest text-rose-500">최근 오류 상세</div>
+                        <div className="mt-1 text-[11px] font-black text-slate-900">
+                          {latestFailureEvent.kind === "generation" ? "생성 실패" : "업로드 실패"} · {latestFailureEvent.stage}
+                          {latestFailureEvent.festivalTitle ? ` · ${latestFailureEvent.festivalTitle}` : ""}
+                        </div>
+                        <div className="mt-1 text-[11px] font-bold text-slate-600">{latestFailureReason.guide}</div>
+                        <div className="mt-2 rounded-lg border border-rose-200 bg-white px-2.5 py-2 text-[11px] font-bold leading-relaxed text-rose-700">
+                          {latestFailureEvent.message}
+                        </div>
+                        <div className="mt-1 text-[10px] font-bold text-slate-400">{formatDateTime(latestFailureEvent.createdAt)}</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </section>
+          );
+        })}
       </div>
 
       {!createMode && (
@@ -1659,7 +2340,7 @@ export default function InstagramAiPage() {
                 />
               </div>
 
-              {(feedbackMessage || errorMessage || stickyErrorMessage) && (
+              {(feedbackMessage || errorMessage || stickyErrorMessage || latestResearchReport) && (
                 <div className="mt-5 space-y-2">
                   {errorMessage && (
                     <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700">
@@ -1681,6 +2362,144 @@ export default function InstagramAiPage() {
                       >
                         닫기
                       </button>
+                    </div>
+                  )}
+                  {latestResearchReport && (
+                    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                      <button
+                        type="button"
+                        onClick={() => setIsResearchReportOpen((prev) => !prev)}
+                        className="flex w-full items-start justify-between gap-4 text-left"
+                      >
+                        <div>
+                          <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">AI 조사 결과</div>
+                          <div className="mt-1 text-sm font-black text-slate-900">{latestResearchReport.festivalTitle}</div>
+                          <div className="mt-1 text-xs font-bold text-slate-500">
+                            조사 시각 {formatDateTime(latestResearchReport.searchedAt)}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={cn(
+                              "rounded-full border px-2.5 py-1 text-[10px] font-black",
+                              RESEARCH_STATUS_TONE[latestResearchReport.status],
+                            )}
+                          >
+                            {RESEARCH_STATUS_LABEL[latestResearchReport.status]}
+                          </span>
+                          {isResearchReportOpen ? (
+                            <ChevronUp className="h-4 w-4 text-slate-400" />
+                          ) : (
+                            <ChevronDown className="h-4 w-4 text-slate-400" />
+                          )}
+                        </div>
+                      </button>
+
+                      {isResearchReportOpen && (
+                        <div className="mt-4 space-y-3 border-t border-slate-100 pt-3">
+                          <div className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-700">
+                            {latestResearchReport.message}
+                          </div>
+                          {latestResearchReport.updatedFields.length > 0 && (
+                            <div className="text-xs font-bold text-emerald-700">
+                              반영된 항목: {latestResearchReport.updatedFields.map((field) => RESEARCH_FIELD_LABEL[field] || field).join(", ")}
+                            </div>
+                          )}
+                          {!latestResearchReport.researched && (
+                            <div className="text-xs font-bold text-slate-500">
+                              이번 조사에서 확보된 추가 텍스트 정보가 없습니다.
+                            </div>
+                          )}
+                          {latestResearchReport.researched && (
+                            <div className="grid gap-2 sm:grid-cols-2">
+                              {(latestResearchReport.researched.performanceSchedule
+                                || latestResearchReport.researched.startDate
+                                || latestResearchReport.researched.endDate) && (
+                                <div className="rounded-xl border border-slate-100 bg-white px-3 py-2 text-xs font-bold text-slate-700">
+                                  공연 일정: {latestResearchReport.researched.performanceSchedule
+                                    || `${latestResearchReport.researched.startDate || "-"} ~ ${latestResearchReport.researched.endDate || "-"}`}
+                                </div>
+                              )}
+                              {(latestResearchReport.researched.venue || latestResearchReport.researched.location) && (
+                                <div className="rounded-xl border border-slate-100 bg-white px-3 py-2 text-xs font-bold text-slate-700">
+                                  공연 장소: {latestResearchReport.researched.venue || latestResearchReport.researched.location}
+                                </div>
+                              )}
+                              {latestResearchReport.researched.lineup && (
+                                <div className="rounded-xl border border-slate-100 bg-white px-3 py-2 text-xs font-bold text-slate-700">
+                                  라인업: {latestResearchReport.researched.lineup}
+                                </div>
+                              )}
+                              {(latestResearchReport.researched.ticketPrice || latestResearchReport.researched.price) && (
+                                <div className="rounded-xl border border-slate-100 bg-white px-3 py-2 text-xs font-bold text-slate-700">
+                                  티켓 가격: {latestResearchReport.researched.ticketPrice || latestResearchReport.researched.price}
+                                </div>
+                              )}
+                              {(() => {
+                                const bookingSite = latestResearchReport.researched.bookingSite || latestResearchReport.researched.homepage;
+                                if (!bookingSite) return null;
+                                if (/^https?:\/\//i.test(bookingSite)) {
+                                  return (
+                                    <a
+                                      href={bookingSite}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="inline-flex items-center gap-1 rounded-xl border border-slate-100 bg-white px-3 py-2 text-xs font-bold text-pink-600 hover:text-pink-700"
+                                    >
+                                      예매처 확인
+                                      <ExternalLink className="h-3.5 w-3.5" />
+                                    </a>
+                                  );
+                                }
+                                return (
+                                  <div className="rounded-xl border border-slate-100 bg-white px-3 py-2 text-xs font-bold text-slate-700">
+                                    예매처: {bookingSite}
+                                  </div>
+                                );
+                              })()}
+                              {latestResearchReport.researched.homepage
+                                && latestResearchReport.researched.homepage !== latestResearchReport.researched.bookingSite
+                                && /^https?:\/\//i.test(latestResearchReport.researched.homepage) && (
+                                  <a
+                                    href={latestResearchReport.researched.homepage}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="inline-flex items-center gap-1 rounded-xl border border-slate-100 bg-white px-3 py-2 text-xs font-bold text-sky-600 hover:text-sky-700"
+                                  >
+                                    공식 홈페이지
+                                    <ExternalLink className="h-3.5 w-3.5" />
+                                  </a>
+                                )}
+                              {latestResearchReport.researched.sourceUrl && (
+                                <a
+                                  href={latestResearchReport.researched.sourceUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-1 rounded-xl border border-slate-100 bg-white px-3 py-2 text-xs font-bold text-sky-600 hover:text-sky-700"
+                                >
+                                  조사 원문 보기
+                                  <ExternalLink className="h-3.5 w-3.5" />
+                                </a>
+                              )}
+                              {latestResearchReport.researched.description && (
+                                <div className="sm:col-span-2 rounded-xl border border-slate-100 bg-white px-3 py-2 text-xs font-bold leading-relaxed text-slate-700">
+                                  조사 요약: {latestResearchReport.researched.description}
+                                </div>
+                              )}
+                              {Array.isArray(latestResearchReport.researched.details) && latestResearchReport.researched.details.length > 0 && (
+                                <div className="sm:col-span-2 rounded-xl border border-slate-100 bg-white px-3 py-2">
+                                  <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">추출된 상세 정보</div>
+                                  <div className="mt-1 space-y-1 text-xs font-bold text-slate-700">
+                                    {latestResearchReport.researched.details.map((detail) => (
+                                      <div key={`${detail.label}-${detail.value}`}>{detail.label}: {detail.value}</div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

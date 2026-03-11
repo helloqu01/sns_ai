@@ -87,7 +87,6 @@ const buildFallbackCaption = (params: {
     opener,
     titles.length > 0 ? `오늘 체크할 포인트: ${titles.join(" · ")}` : asNonEmptyString(params.content),
     closer,
-    params.sourceLabel ? `Source: ${params.sourceLabel}` : null,
     hashtags || "#페스티벌 #카드뉴스",
   ]
     .filter(Boolean)
@@ -136,7 +135,7 @@ const buildCardnewsCaptionPrompt = (params: {
 3. 타겟 독자는 ${params.target || "일반 독자"}입니다.
 4. 장르/카테고리(${params.genre || "일반"}) 특성이 느껴지게 작성하세요.
 5. 마지막에는 해시태그 3~5개를 자연스럽게 붙이세요.
-6. 출처가 있으면 본문 마지막 근처에 "Source: ${params.sourceLabel || params.source}"를 한 번 포함하세요.
+6. "Source:" 같은 출처 표기 문구는 캡션에 포함하지 마세요.
 
 [원문 정보]
 ${params.content || "-"}

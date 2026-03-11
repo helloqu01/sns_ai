@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { PartyPopper, Calendar, MapPin, RefreshCw, Info, ExternalLink, Sparkles, Plus, ArrowUp } from 'lucide-react';
+import { PartyPopper, Calendar, MapPin, RefreshCw, Info, ExternalLink, Sparkles, Plus, ArrowUp, Check } from 'lucide-react';
 import { UnifiedFestival } from '@/types/festival';
 import { fetchFestivalsFromApi } from '@/lib/festival-client-cache';
 
@@ -25,6 +25,21 @@ const sourceTabs: { id: 'all' | 'concert' | 'festival' | 'concert_k' | 'festival
 ];
 const FESTIVALS_PER_PAGE = 30;
 type FestivalSourceTab = (typeof sourceTabs)[number]["id"];
+type NaverUpdateResultItem = {
+    festivalId: string;
+    title?: string;
+    status: 'updated' | 'unchanged' | 'not-found' | 'no-match' | 'error';
+    updatedFields?: string[];
+    message?: string;
+};
+type NaverUpdateSummary = {
+    updatedCount: number;
+    unchangedCount: number;
+    noMatchCount: number;
+    notFoundCount: number;
+    errorCount: number;
+    results: NaverUpdateResultItem[];
+};
 
 const getFestivalIdentityKey = (festival: UnifiedFestival) => {
     if (festival.sourceUrl && festival.sourceUrl.trim().length > 0) {
@@ -68,6 +83,11 @@ export default function FestivalsPage() {
     const [showScrollTopButton, setShowScrollTopButton] = useState(false);
     const [newFestivals, setNewFestivals] = useState<UnifiedFestival[]>([]);
     const [showNewFestivalsModal, setShowNewFestivalsModal] = useState(false);
+    const [selectedFestivalIds, setSelectedFestivalIds] = useState<string[]>([]);
+    const [isNaverUpdating, setIsNaverUpdating] = useState(false);
+    const [naverUpdateMessage, setNaverUpdateMessage] = useState<string | null>(null);
+    const [showNaverUpdateModal, setShowNaverUpdateModal] = useState(false);
+    const [naverUpdateSummary, setNaverUpdateSummary] = useState<NaverUpdateSummary | null>(null);
 
     const fetchFestivals = async (refresh = false) => {
         setIsLoading(true);
@@ -112,9 +132,91 @@ export default function FestivalsPage() {
         setShowNewFestivalsModal(true);
     };
 
+    const toggleFestivalSelection = (festivalId: string) => {
+        setSelectedFestivalIds((prev) => (
+            prev.includes(festivalId)
+                ? prev.filter((id) => id !== festivalId)
+                : [...prev, festivalId]
+        ));
+    };
+
+    const clearFestivalSelection = () => {
+        setSelectedFestivalIds([]);
+    };
+
+    const handleSelectedNaverUpdate = async () => {
+        if (selectedFestivalIds.length === 0 || isNaverUpdating) return;
+
+        setIsNaverUpdating(true);
+        setNaverUpdateMessage(null);
+        setNaverUpdateSummary(null);
+
+        try {
+            const res = await fetch('/api/festivals/research', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    festivalIds: selectedFestivalIds,
+                }),
+            });
+
+            const payload = await res.json().catch(() => null) as {
+                error?: string;
+                updatedCount?: number;
+                unchangedCount?: number;
+                noMatchCount?: number;
+                notFoundCount?: number;
+                errorCount?: number;
+                results?: NaverUpdateResultItem[];
+            } | null;
+
+            if (!res.ok) {
+                throw new Error(payload?.error || 'AI 조사 기반 업데이트 요청에 실패했습니다.');
+            }
+
+            const updated = payload?.updatedCount || 0;
+            const unchanged = payload?.unchangedCount || 0;
+            const noMatch = payload?.noMatchCount || 0;
+            const notFound = payload?.notFoundCount || 0;
+            const failed = payload?.errorCount || 0;
+            const results = Array.isArray(payload?.results) ? payload.results : [];
+
+            setNaverUpdateSummary({
+                updatedCount: updated,
+                unchangedCount: unchanged,
+                noMatchCount: noMatch,
+                notFoundCount: notFound,
+                errorCount: failed,
+                results,
+            });
+            setShowNaverUpdateModal(true);
+            setNaverUpdateMessage(
+                `완료: 갱신 ${updated}건 · 변경 없음 ${unchanged}건 · 검색 실패 ${noMatch}건 · 미존재 ${notFound}건 · 오류 ${failed}건`,
+            );
+            setSelectedFestivalIds([]);
+            await fetchFestivals(true);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'AI 조사 업데이트 중 오류가 발생했습니다.';
+            setNaverUpdateMessage(`실패: ${message}`);
+        } finally {
+            setIsNaverUpdating(false);
+        }
+    };
+
     useEffect(() => {
         fetchFestivals();
     }, []);
+
+    useEffect(() => {
+        setSelectedFestivalIds((prev) => {
+            if (prev.length === 0) return prev;
+            const existingIds = new Set(festivals.map((festival) => festival.id));
+            const next = prev.filter((id) => existingIds.has(id));
+            return next.length === prev.length ? prev : next;
+        });
+    }, [festivals]);
 
     // Get unique genres for the active source
     const availableGenres = useMemo(() => {
@@ -269,6 +371,60 @@ export default function FestivalsPage() {
         return (festival.details || []).filter((detail) => !hiddenLabels.has(detail.label));
     };
 
+    const getNaverUpdateStatusLabel = (status: NaverUpdateResultItem['status']) => {
+        switch (status) {
+            case 'updated':
+                return '갱신 완료';
+            case 'unchanged':
+                return '변경 없음';
+            case 'no-match':
+                return '검색 실패';
+            case 'not-found':
+                return '대상 없음';
+            case 'error':
+                return '오류';
+            default:
+                return status;
+        }
+    };
+
+    const getNaverUpdateStatusClass = (status: NaverUpdateResultItem['status']) => {
+        switch (status) {
+            case 'updated':
+                return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+            case 'unchanged':
+                return 'bg-slate-100 text-slate-600 border-slate-200';
+            case 'no-match':
+                return 'bg-amber-50 text-amber-700 border-amber-200';
+            case 'not-found':
+                return 'bg-violet-50 text-violet-700 border-violet-200';
+            case 'error':
+                return 'bg-rose-50 text-rose-700 border-rose-200';
+            default:
+                return 'bg-slate-100 text-slate-600 border-slate-200';
+        }
+    };
+
+    const formatUpdatedFields = (fields?: string[]) => {
+        if (!Array.isArray(fields) || fields.length === 0) return '';
+        const labels: Record<string, string> = {
+            location: '장소',
+            startDate: '시작일',
+            endDate: '종료일',
+            description: '본문',
+            lineup: '라인업',
+            price: '티켓 가격',
+            homepage: '홈페이지',
+            details: '상세 정보',
+            sourceUrl: '원문 링크',
+            publishedDate: '게시일',
+            publishedAt: '게시 시각',
+            imageUrl: '이미지',
+            genre: '장르',
+        };
+        return fields.map((field) => labels[field] || field).join(', ');
+    };
+
     const updateScrollTopButtonVisibility = useCallback(() => {
         const doc = document.documentElement;
         const hasScrollableHeight = doc.scrollHeight - doc.clientHeight > 24;
@@ -399,6 +555,39 @@ export default function FestivalsPage() {
                         <p className="mt-4 text-xs font-bold text-slate-400">
                             총 {filteredFestivals.length}건 · 현재 {visibleFestivals.length}건 표시
                         </p>
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                            <span className="text-xs font-bold text-slate-500">
+                                선택 {selectedFestivalIds.length}건
+                            </span>
+                            <button
+                                onClick={handleSelectedNaverUpdate}
+                                disabled={selectedFestivalIds.length === 0 || isNaverUpdating}
+                                className="inline-flex items-center gap-1.5 rounded-xl bg-pink-600 px-3 py-2 text-[11px] font-black text-white transition-all hover:bg-pink-500 disabled:cursor-not-allowed disabled:bg-slate-300"
+                            >
+                                <RefreshCw className={`h-3.5 w-3.5 ${isNaverUpdating ? 'animate-spin' : ''}`} />
+                                선택 항목 AI 조사 업데이트
+                            </button>
+                            <button
+                                onClick={clearFestivalSelection}
+                                disabled={selectedFestivalIds.length === 0 || isNaverUpdating}
+                                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] font-black text-slate-500 transition-all hover:border-slate-300 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                                선택 해제
+                            </button>
+                        </div>
+                        {naverUpdateMessage && (
+                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                                <p className="text-[11px] font-bold text-slate-500">{naverUpdateMessage}</p>
+                                {naverUpdateSummary && (
+                                    <button
+                                        onClick={() => setShowNaverUpdateModal(true)}
+                                        className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-black text-slate-500 transition-all hover:border-slate-300 hover:text-slate-700"
+                                    >
+                                        결과 상세 보기
+                                    </button>
+                                )}
+                            </div>
+                        )}
                     </div>
 
                     {/* Grid (Scrollable) */}
@@ -422,56 +611,71 @@ export default function FestivalsPage() {
                         ) : (
                             <>
                                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-6 gap-y-10">
-                                    {visibleFestivals.map((festival) => (
-                                        <div
-                                            key={festival.id}
-                                            onClick={() => setSelectedFestival(festival)}
-                                            className="group cursor-pointer"
-                                        >
-                                            <div className="relative aspect-[3/4] rounded-[32px] overflow-hidden bg-slate-200 shadow-lg border-4 border-white group-hover:shadow-2xl group-hover:-translate-y-2 transition-all duration-500">
-                                                <img
-                                                    src={festival.imageUrl || "https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?w=800&q=80"}
-                                                    alt={festival.title}
-                                                    className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700"
-                                                />
-                                                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-60 group-hover:opacity-80 transition-opacity" />
+                                    {visibleFestivals.map((festival) => {
+                                        const isSelected = selectedFestivalIds.includes(festival.id);
+                                        return (
+                                            <div
+                                                key={festival.id}
+                                                onClick={() => setSelectedFestival(festival)}
+                                                className="group cursor-pointer"
+                                            >
+                                                <div className={`relative aspect-[3/4] rounded-[32px] overflow-hidden bg-slate-200 shadow-lg border-4 group-hover:shadow-2xl group-hover:-translate-y-2 transition-all duration-500 ${isSelected ? 'border-pink-500 shadow-pink-200' : 'border-white'}`}>
+                                                    <button
+                                                        type="button"
+                                                        onClick={(event) => {
+                                                            event.stopPropagation();
+                                                            toggleFestivalSelection(festival.id);
+                                                        }}
+                                                        className={`absolute right-4 top-4 z-10 inline-flex h-8 w-8 items-center justify-center rounded-lg border text-white backdrop-blur-md transition-all ${isSelected ? 'border-pink-400 bg-pink-500' : 'border-white/60 bg-black/35 hover:bg-black/50'}`}
+                                                        aria-label={isSelected ? '선택 해제' : '선택'}
+                                                        title={isSelected ? '선택 해제' : '선택'}
+                                                    >
+                                                        {isSelected && <Check className="h-4 w-4" />}
+                                                    </button>
+                                                    <img
+                                                        src={festival.imageUrl || "https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?w=800&q=80"}
+                                                        alt={festival.title}
+                                                        className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700"
+                                                    />
+                                                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-60 group-hover:opacity-80 transition-opacity" />
 
-                                                {/* Attribution Badges */}
-                                                <div className="absolute top-4 left-4 flex flex-col gap-2">
-                                                    <div className="bg-black/40 backdrop-blur-xl border border-white/20 px-3 py-1.5 rounded-full flex items-center gap-1.5 transition-all">
-                                                        <div className="w-1.5 h-1.5 rounded-full bg-pink-500 animate-pulse"></div>
-                                                        <span className="text-[10px] font-black text-white/90 uppercase tracking-wider">
-                                                            @{festival.sourceLabel}
-                                                        </span>
-                                                    </div>
-                                                </div>
-
-                                                <div className="absolute bottom-5 left-5 right-5 text-white">
-                                                    <div className="flex flex-wrap gap-1.5 mb-3">
-                                                        {festival.genre.split(',').slice(0, 2).map((tag, idx) => (
-                                                            <span key={idx} className="px-2.5 py-1 bg-white/20 backdrop-blur-md rounded-lg text-[10px] font-black uppercase tracking-tight border border-white/10">
-                                                                {tag.trim()}
+                                                    {/* Attribution Badges */}
+                                                    <div className="absolute top-4 left-4 flex flex-col gap-2">
+                                                        <div className="bg-black/40 backdrop-blur-xl border border-white/20 px-3 py-1.5 rounded-full flex items-center gap-1.5 transition-all">
+                                                            <div className="w-1.5 h-1.5 rounded-full bg-pink-500 animate-pulse"></div>
+                                                            <span className="text-[10px] font-black text-white/90 uppercase tracking-wider">
+                                                                @{festival.sourceLabel}
                                                             </span>
-                                                        ))}
+                                                        </div>
                                                     </div>
-                                                    <h3 className="text-lg font-black leading-tight line-clamp-2 drop-shadow-md">
-                                                        {festival.title}
-                                                    </h3>
-                                                </div>
-                                            </div>
 
-                                            <div className="mt-4 px-2 space-y-1">
-                                                <div className="flex items-center gap-2 text-[11px] font-bold text-slate-500">
-                                                    <MapPin className="w-3 h-3 text-pink-400" />
-                                                    <span className="truncate">{festival.location}</span>
+                                                    <div className="absolute bottom-5 left-5 right-5 text-white">
+                                                        <div className="flex flex-wrap gap-1.5 mb-3">
+                                                            {festival.genre.split(',').slice(0, 2).map((tag, idx) => (
+                                                                <span key={idx} className="px-2.5 py-1 bg-white/20 backdrop-blur-md rounded-lg text-[10px] font-black uppercase tracking-tight border border-white/10">
+                                                                    {tag.trim()}
+                                                                </span>
+                                                            ))}
+                                                        </div>
+                                                        <h3 className="text-lg font-black leading-tight line-clamp-2 drop-shadow-md">
+                                                            {festival.title}
+                                                        </h3>
+                                                    </div>
                                                 </div>
-                                                <div className="flex items-center gap-2 text-[11px] font-bold text-slate-400">
-                                                    <Calendar className="w-3 h-3 text-slate-300" />
-                                                    <span>{formatFestivalDateRange(festival)}</span>
+
+                                                <div className="mt-4 px-2 space-y-1">
+                                                    <div className="flex items-center gap-2 text-[11px] font-bold text-slate-500">
+                                                        <MapPin className="w-3 h-3 text-pink-400" />
+                                                        <span className="truncate">{festival.location}</span>
+                                                    </div>
+                                                    <div className="flex items-center gap-2 text-[11px] font-bold text-slate-400">
+                                                        <Calendar className="w-3 h-3 text-slate-300" />
+                                                        <span>{formatFestivalDateRange(festival)}</span>
+                                                    </div>
                                                 </div>
                                             </div>
-                                        </div>
-                                    ))}
+                                        );
+                                    })}
                                 </div>
                                 <div ref={loadMoreRef} className="h-14 mt-8 flex items-center justify-center">
                                     {hasMore && <span className="text-xs font-bold text-slate-400">스크롤하면 더 불러옵니다…</span>}
@@ -557,6 +761,104 @@ export default function FestivalsPage() {
                         <div className="mt-6 flex justify-end">
                             <button
                                 onClick={() => setShowNewFestivalsModal(false)}
+                                className="rounded-2xl bg-slate-900 px-5 py-3 text-xs font-black text-white shadow-lg shadow-slate-900/20 transition-all hover:bg-slate-800"
+                            >
+                                확인
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {showNaverUpdateModal && naverUpdateSummary && (
+                <div
+                    className="fixed inset-0 z-[112] flex items-center justify-center bg-slate-900/55 p-6 backdrop-blur-sm"
+                    onClick={() => setShowNaverUpdateModal(false)}
+                >
+                    <div
+                        className="relative w-full max-w-4xl rounded-[32px] bg-white p-8 shadow-2xl"
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <button
+                            onClick={() => setShowNaverUpdateModal(false)}
+                            className="absolute right-6 top-6 inline-flex h-10 w-10 items-center justify-center rounded-full bg-black/10 text-slate-700 transition-all hover:bg-black/20"
+                            aria-label="AI 조사 업데이트 결과 닫기"
+                        >
+                            <Plus className="h-5 w-5 rotate-45" />
+                        </button>
+                        <div>
+                            <p className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-400">요청 결과</p>
+                            <h3 className="mt-2 text-2xl font-black text-slate-900">AI 조사 업데이트 결과</h3>
+                            <p className="mt-1 text-sm font-bold text-slate-500">
+                                선택한 페스티벌 항목별 처리 결과입니다.
+                            </p>
+                        </div>
+
+                        <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-5">
+                            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2">
+                                <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">갱신</p>
+                                <p className="mt-1 text-xl font-black text-emerald-700">{naverUpdateSummary.updatedCount}</p>
+                            </div>
+                            <div className="rounded-2xl border border-slate-200 bg-slate-100 px-3 py-2">
+                                <p className="text-[10px] font-black uppercase tracking-widest text-slate-600">변경 없음</p>
+                                <p className="mt-1 text-xl font-black text-slate-700">{naverUpdateSummary.unchangedCount}</p>
+                            </div>
+                            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2">
+                                <p className="text-[10px] font-black uppercase tracking-widest text-amber-700">검색 실패</p>
+                                <p className="mt-1 text-xl font-black text-amber-700">{naverUpdateSummary.noMatchCount}</p>
+                            </div>
+                            <div className="rounded-2xl border border-violet-200 bg-violet-50 px-3 py-2">
+                                <p className="text-[10px] font-black uppercase tracking-widest text-violet-700">대상 없음</p>
+                                <p className="mt-1 text-xl font-black text-violet-700">{naverUpdateSummary.notFoundCount}</p>
+                            </div>
+                            <div className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2">
+                                <p className="text-[10px] font-black uppercase tracking-widest text-rose-700">오류</p>
+                                <p className="mt-1 text-xl font-black text-rose-700">{naverUpdateSummary.errorCount}</p>
+                            </div>
+                        </div>
+
+                        <div className="mt-6 max-h-[52vh] space-y-3 overflow-y-auto pr-1">
+                            {naverUpdateSummary.results.length > 0 ? (
+                                naverUpdateSummary.results.map((result, index) => (
+                                    <div
+                                        key={`${result.festivalId}-${index}`}
+                                        className="rounded-2xl border border-slate-200 bg-white px-4 py-4"
+                                    >
+                                        <div className="flex flex-wrap items-start justify-between gap-3">
+                                            <div className="min-w-0 flex-1">
+                                                <p className="truncate text-sm font-black text-slate-900">
+                                                    {result.title || "제목 정보 없음"}
+                                                </p>
+                                                <p className="mt-1 text-[11px] font-bold text-slate-400">
+                                                    ID: {result.festivalId}
+                                                </p>
+                                                {result.status === 'updated' && formatUpdatedFields(result.updatedFields) && (
+                                                    <p className="mt-2 text-xs font-bold text-emerald-700">
+                                                        갱신 필드: {formatUpdatedFields(result.updatedFields)}
+                                                    </p>
+                                                )}
+                                                {result.message && (
+                                                    <p className="mt-2 text-xs font-bold text-slate-500">
+                                                        {result.message}
+                                                    </p>
+                                                )}
+                                            </div>
+                                            <span className={`inline-flex rounded-full border px-3 py-1 text-[10px] font-black uppercase tracking-wider ${getNaverUpdateStatusClass(result.status)}`}>
+                                                {getNaverUpdateStatusLabel(result.status)}
+                                            </span>
+                                        </div>
+                                    </div>
+                                ))
+                            ) : (
+                                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-10 text-center text-sm font-bold text-slate-400">
+                                    표시할 상세 결과가 없습니다.
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="mt-6 flex justify-end">
+                            <button
+                                onClick={() => setShowNaverUpdateModal(false)}
                                 className="rounded-2xl bg-slate-900 px-5 py-3 text-xs font-black text-white shadow-lg shadow-slate-900/20 transition-all hover:bg-slate-800"
                             >
                                 확인

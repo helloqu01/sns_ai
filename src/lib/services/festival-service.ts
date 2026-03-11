@@ -1,6 +1,8 @@
-import { UnifiedFestival } from "@/types/festival";
+import { FestivalDetailSection, UnifiedFestival } from "@/types/festival";
 import { FestivalLifeAdapter } from "../adapters/festival-life-adapter";
+import { NaverSearchAdapter } from "../adapters/naver-search-adapter";
 import { db, isFirebaseConfigured } from "../firebase-admin";
+import { geminiFlashModel } from "../gemini";
 
 type FirestoreFestivalDoc = UnifiedFestival & {
     updatedAt?: string;
@@ -53,8 +55,54 @@ type FestivalPublishedDateSyncResult = FestivalPublishedDateSyncSummary & {
     festivals: UnifiedFestival[];
 };
 
+type GeminiResearchOutput = {
+    ticketPrice: string;
+    venue: string;
+    lineup: string;
+    performanceSchedule: string;
+    bookingSite: string;
+    startDate: string;
+    endDate: string;
+    evidenceSummary: string;
+};
+
+export type FestivalNaverUpdateItem = {
+    festivalId: string;
+    title?: string;
+    status: "updated" | "unchanged" | "not-found" | "no-match" | "error";
+    searchedAt?: string;
+    updatedFields?: string[];
+    researched?: {
+        ticketPrice?: string;
+        venue?: string;
+        lineup?: string;
+        performanceSchedule?: string;
+        bookingSite?: string;
+        sourceUrl?: string;
+        startDate?: string;
+        endDate?: string;
+        location?: string;
+        price?: string;
+        homepage?: string;
+        description?: string;
+        details?: FestivalDetailSection[];
+    };
+    message?: string;
+};
+
+export type FestivalNaverUpdateResult = {
+    requestedCount: number;
+    processedCount: number;
+    updatedCount: number;
+    unchangedCount: number;
+    notFoundCount: number;
+    noMatchCount: number;
+    errorCount: number;
+    results: FestivalNaverUpdateItem[];
+};
+
 export class FestivalService {
-    private adapters = [new FestivalLifeAdapter()];
+    private adapters = [new FestivalLifeAdapter(), new NaverSearchAdapter()];
     private memoryCache: FestivalCacheState | null = null;
     private firestoreLoadInFlight: Promise<UnifiedFestival[]> | null = null;
     private refreshInFlight: Promise<UnifiedFestival[]> | null = null;
@@ -223,6 +271,330 @@ export class FestivalService {
         if (!this.memoryCache) return null;
         if (this.memoryCache.expiresAt <= Date.now()) return null;
         return this.memoryCache;
+    }
+
+    private toStoredFestivalDoc(docId: string, data: Partial<UnifiedFestival> | undefined): UnifiedFestival | null {
+        if (!data || typeof data !== "object") return null;
+
+        const id = typeof data.id === "string" && data.id.trim().length > 0 ? data.id.trim() : docId;
+        const title = typeof data.title === "string" ? data.title.trim() : "";
+        const location = typeof data.location === "string" ? data.location.trim() : "";
+        const startDate = typeof data.startDate === "string" ? data.startDate.trim() : "";
+        const endDate = typeof data.endDate === "string" ? data.endDate.trim() : "";
+        if (!id || !title || !startDate || !endDate) {
+            return null;
+        }
+
+        return {
+            ...(data as UnifiedFestival),
+            id,
+            title,
+            location: location || "상세 정보 참조",
+            startDate,
+            endDate,
+            imageUrl: typeof data.imageUrl === "string" ? data.imageUrl : "",
+            source: data.source || "FESTIVAL_LIFE",
+            genre: typeof data.genre === "string" && data.genre.trim().length > 0 ? data.genre : "기타",
+        };
+    }
+
+    private async getFestivalsByRequestedIds(festivalIds: string[]) {
+        const records = new Map<string, { docId: string; festival: UnifiedFestival }>();
+        const firestore = db;
+        if (!firestore || festivalIds.length === 0) return records;
+
+        const uniqueIds = Array.from(new Set(festivalIds.map((id) => id.trim()).filter(Boolean)));
+        if (uniqueIds.length === 0) return records;
+
+        const docRefs = uniqueIds.map((festivalId) => firestore.collection("festivals").doc(festivalId));
+        const directSnapshots = await firestore.getAll(...docRefs);
+        directSnapshots.forEach((snapshot, index) => {
+            if (!snapshot.exists) return;
+            const festival = this.toStoredFestivalDoc(snapshot.id, snapshot.data() as Partial<UnifiedFestival>);
+            if (!festival) return;
+            records.set(uniqueIds[index], {
+                docId: snapshot.id,
+                festival,
+            });
+        });
+
+        const unresolvedIds = uniqueIds.filter((festivalId) => !records.has(festivalId));
+        if (unresolvedIds.length === 0) return records;
+
+        const chunkSize = 10; // Firestore "in" filter limit.
+        for (let i = 0; i < unresolvedIds.length; i += chunkSize) {
+            const chunk = unresolvedIds.slice(i, i + chunkSize);
+            const snapshot = await firestore.collection("festivals").where("id", "in", chunk).get();
+            snapshot.forEach((doc) => {
+                const festival = this.toStoredFestivalDoc(doc.id, doc.data() as Partial<UnifiedFestival>);
+                if (!festival) return;
+                if (!chunk.includes(festival.id)) return;
+                if (records.has(festival.id)) return;
+                records.set(festival.id, {
+                    docId: doc.id,
+                    festival,
+                });
+            });
+        }
+
+        return records;
+    }
+
+    private cleanResearchValue(value: unknown, maxLen = 280): string {
+        if (typeof value !== "string") return "";
+        return value.replace(/\s+/g, " ").trim().slice(0, maxLen);
+    }
+
+    private isIsoDate(value: string) {
+        return /^\d{4}-\d{2}-\d{2}$/.test(value);
+    }
+
+    private extractJsonObjectFromText(text: string) {
+        const firstBrace = text.indexOf("{");
+        const lastBrace = text.lastIndexOf("}");
+        if (firstBrace < 0 || lastBrace <= firstBrace) {
+            throw new Error("Gemini 조사 응답에서 JSON 객체를 찾지 못했습니다.");
+        }
+        return text.slice(firstBrace, lastBrace + 1);
+    }
+
+    private stripHtmlForResearch(input: string) {
+        return input
+            .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+            .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+            .replace(/<!--[\s\S]*?-->/g, " ")
+            .replace(/<[^>]*>/g, " ")
+            .replace(/&nbsp;/gi, " ")
+            .replace(/&amp;/gi, "&")
+            .replace(/&quot;/gi, "\"")
+            .replace(/&#39;/gi, "'")
+            .replace(/&lt;/gi, "<")
+            .replace(/&gt;/gi, ">")
+            .replace(/\s+/g, " ")
+            .trim();
+    }
+
+    private async fetchPageTextForResearch(url: string): Promise<string | null> {
+        const trimmed = url.trim();
+        if (!trimmed) return null;
+        if (!/^https?:\/\//i.test(trimmed)) return null;
+
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 12_000);
+
+        try {
+            const response = await fetch(trimmed, {
+                headers: {
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                },
+                signal: controller.signal,
+            });
+            if (!response.ok) return null;
+
+            const html = await response.text();
+            const plain = this.stripHtmlForResearch(html);
+            if (!plain) return null;
+            return plain.slice(0, 12_000);
+        } catch {
+            return null;
+        } finally {
+            clearTimeout(timeout);
+        }
+    }
+
+    private parseGeminiResearchOutput(rawText: string): GeminiResearchOutput {
+        const parsed = JSON.parse(this.extractJsonObjectFromText(rawText)) as Partial<GeminiResearchOutput>;
+        return {
+            ticketPrice: this.cleanResearchValue(parsed.ticketPrice, 220),
+            venue: this.cleanResearchValue(parsed.venue, 220),
+            lineup: this.cleanResearchValue(parsed.lineup, 280),
+            performanceSchedule: this.cleanResearchValue(parsed.performanceSchedule, 220),
+            bookingSite: this.cleanResearchValue(parsed.bookingSite, 240),
+            startDate: this.cleanResearchValue(parsed.startDate, 20),
+            endDate: this.cleanResearchValue(parsed.endDate, 20),
+            evidenceSummary: this.cleanResearchValue(parsed.evidenceSummary, 320),
+        };
+    }
+
+    private buildGeminiResearchPrompt(festival: UnifiedFestival, sourceContext: string) {
+        return `
+당신은 한국 공연/페스티벌 데이터 조사 보조 AI입니다.
+아래 제공된 텍스트에서만 근거를 찾아 필수 항목 5개를 추출하세요.
+
+[필수 추출 항목]
+1) ticketPrice: 티켓 가격
+2) venue: 공연 장소
+3) lineup: 라인업
+4) performanceSchedule: 공연 일정
+5) bookingSite: 예매처
+
+[엄격 규칙]
+- 추측 금지. 텍스트 근거가 없으면 빈 문자열("")을 반환하세요.
+- 외부 지식을 임의로 보충하지 마세요.
+- 날짜를 정확히 파악할 수 있으면 startDate/endDate를 YYYY-MM-DD로 채우고, 아니면 빈 문자열로 두세요.
+- 설명 문장 없이 JSON 객체만 출력하세요.
+
+[행사 기본 정보]
+- 행사명: ${festival.title}
+- 기존 일정: ${festival.startDate} ~ ${festival.endDate}
+- 기존 장소: ${festival.location}
+- 기존 라인업: ${festival.lineup || ""}
+- 기존 티켓 가격: ${festival.price || ""}
+- 기존 홈페이지: ${festival.homepage || ""}
+- 원문 URL: ${festival.sourceUrl || ""}
+
+[조사 텍스트]
+${sourceContext}
+
+[출력 JSON 스키마]
+{
+  "ticketPrice": "",
+  "venue": "",
+  "lineup": "",
+  "performanceSchedule": "",
+  "bookingSite": "",
+  "startDate": "",
+  "endDate": "",
+  "evidenceSummary": ""
+}
+`.trim();
+    }
+
+    private mergeDetailsWithRequiredResearchFields(
+        existingDetails: FestivalDetailSection[] | undefined,
+        output: GeminiResearchOutput,
+    ): FestivalDetailSection[] {
+        const map = new Map<string, string>();
+        (existingDetails || []).forEach((detail) => {
+            const label = this.cleanResearchValue(detail.label, 40);
+            const value = this.cleanResearchValue(detail.value, 240);
+            if (!label || !value) return;
+            if (!map.has(label)) {
+                map.set(label, value);
+            }
+        });
+
+        const scheduleValue = output.performanceSchedule || (
+            output.startDate && output.endDate ? `${output.startDate} ~ ${output.endDate}` : ""
+        );
+        if (scheduleValue) map.set("일정", scheduleValue);
+        if (output.venue) map.set("장소", output.venue);
+        if (output.lineup) map.set("라인업", output.lineup);
+        if (output.ticketPrice) map.set("티켓 가격", output.ticketPrice);
+        if (output.bookingSite) map.set("예매처", output.bookingSite);
+
+        return Array.from(map.entries())
+            .map(([label, value]) => ({ label, value }))
+            .slice(0, 12);
+    }
+
+    private buildGeminiResearchPatch(existing: UnifiedFestival, output: GeminiResearchOutput) {
+        const patch: Partial<UnifiedFestival> = {};
+        const updatedFields: string[] = [];
+
+        const nextVenue = this.cleanResearchValue(output.venue, 200);
+        if (nextVenue && nextVenue !== this.cleanResearchValue(existing.location, 200)) {
+            patch.location = nextVenue;
+            updatedFields.push("location");
+        }
+
+        const nextLineup = this.cleanResearchValue(output.lineup, 260);
+        if (nextLineup && nextLineup !== this.cleanResearchValue(existing.lineup, 260)) {
+            patch.lineup = nextLineup;
+            updatedFields.push("lineup");
+        }
+
+        const nextTicketPrice = this.cleanResearchValue(output.ticketPrice, 180);
+        if (nextTicketPrice && nextTicketPrice !== this.cleanResearchValue(existing.price, 180)) {
+            patch.price = nextTicketPrice;
+            updatedFields.push("price");
+        }
+
+        const nextBookingSite = this.cleanResearchValue(output.bookingSite, 240);
+        if (
+            nextBookingSite
+            && /^https?:\/\//i.test(nextBookingSite)
+            && nextBookingSite !== this.cleanResearchValue(existing.homepage, 240)
+        ) {
+            patch.homepage = nextBookingSite;
+            updatedFields.push("homepage");
+        }
+
+        const nextStartDate = this.cleanResearchValue(output.startDate, 20);
+        if (nextStartDate && this.isIsoDate(nextStartDate) && nextStartDate !== existing.startDate) {
+            patch.startDate = nextStartDate;
+            updatedFields.push("startDate");
+        }
+
+        const nextEndDate = this.cleanResearchValue(output.endDate, 20);
+        if (nextEndDate && this.isIsoDate(nextEndDate) && nextEndDate !== existing.endDate) {
+            patch.endDate = nextEndDate;
+            updatedFields.push("endDate");
+        }
+
+        const mergedDetails = this.mergeDetailsWithRequiredResearchFields(existing.details, output);
+        const currentDetails = Array.isArray(existing.details) ? existing.details : [];
+        if (JSON.stringify(currentDetails) !== JSON.stringify(mergedDetails)) {
+            patch.details = mergedDetails;
+            updatedFields.push("details");
+        }
+
+        return { patch, updatedFields, mergedDetails };
+    }
+
+    private async researchFestivalWithGemini(festival: UnifiedFestival) {
+        const sourceTexts: string[] = [];
+        const baseDescription = this.cleanResearchValue(festival.description, 3_000);
+        if (baseDescription) sourceTexts.push(`[기존 설명]\n${baseDescription}`);
+
+        const baseDetails = Array.isArray(festival.details)
+            ? festival.details
+                .map((detail) => `${this.cleanResearchValue(detail.label, 40)}: ${this.cleanResearchValue(detail.value, 220)}`)
+                .filter((line) => line.length > 2)
+                .join("\n")
+            : "";
+        if (baseDetails) sourceTexts.push(`[기존 상세 정보]\n${baseDetails}`);
+
+        if (festival.sourceUrl) {
+            const sourcePageText = await this.fetchPageTextForResearch(festival.sourceUrl);
+            if (sourcePageText) {
+                sourceTexts.push(`[원문 페이지 본문]\n${sourcePageText}`);
+            }
+        }
+
+        if (festival.homepage && festival.homepage !== festival.sourceUrl) {
+            const homepageText = await this.fetchPageTextForResearch(festival.homepage);
+            if (homepageText) {
+                sourceTexts.push(`[홈페이지 본문]\n${homepageText}`);
+            }
+        }
+
+        const sourceContext = sourceTexts.join("\n\n").slice(0, 16_000);
+        if (!sourceContext.trim()) {
+            return {
+                output: {
+                    ticketPrice: "",
+                    venue: "",
+                    lineup: "",
+                    performanceSchedule: "",
+                    bookingSite: "",
+                    startDate: "",
+                    endDate: "",
+                    evidenceSummary: "",
+                } satisfies GeminiResearchOutput,
+                patch: {} as Partial<UnifiedFestival>,
+                updatedFields: [] as string[],
+                mergedDetails: Array.isArray(festival.details) ? festival.details : [],
+            };
+        }
+
+        const prompt = this.buildGeminiResearchPrompt(festival, sourceContext);
+        const result = await geminiFlashModel.generateContent(prompt);
+        const response = await result.response;
+        const output = this.parseGeminiResearchOutput(response.text().trim());
+        const { patch, updatedFields, mergedDetails } = this.buildGeminiResearchPatch(festival, output);
+        return { output, patch, updatedFields, mergedDetails };
     }
 
     private buildKnownFestivalLifeIdsByPath(festivals: UnifiedFestival[]): Map<string, Set<string>> {
@@ -661,6 +1033,189 @@ export class FestivalService {
             cleanedDuplicateDocCount: upsertSummary.cleanedDuplicateDocCount,
             festivals: this.sortFestivals(filteredFestivals),
         };
+    }
+
+    async updateFestivalsByGeminiResearch(festivalIds: string[]): Promise<FestivalNaverUpdateResult> {
+        const uniqueFestivalIds = Array.from(new Set(festivalIds.map((id) => id.trim()).filter(Boolean)));
+        if (uniqueFestivalIds.length === 0) {
+            return {
+                requestedCount: 0,
+                processedCount: 0,
+                updatedCount: 0,
+                unchangedCount: 0,
+                notFoundCount: 0,
+                noMatchCount: 0,
+                errorCount: 0,
+                results: [],
+            };
+        }
+
+        if (!db || !isFirebaseConfigured) {
+            return {
+                requestedCount: uniqueFestivalIds.length,
+                processedCount: uniqueFestivalIds.length,
+                updatedCount: 0,
+                unchangedCount: 0,
+                notFoundCount: 0,
+                noMatchCount: 0,
+                errorCount: uniqueFestivalIds.length,
+                results: uniqueFestivalIds.map((festivalId) => ({
+                    festivalId,
+                    status: "error" as const,
+                    message: "Firebase가 설정되지 않아 업데이트할 수 없습니다.",
+                })),
+            };
+        }
+
+        const geminiApiKey = process.env.GEMINI_API_KEY?.trim() || process.env.NEXT_PUBLIC_GEMINI_API_KEY?.trim();
+        if (!geminiApiKey) {
+            return {
+                requestedCount: uniqueFestivalIds.length,
+                processedCount: uniqueFestivalIds.length,
+                updatedCount: 0,
+                unchangedCount: 0,
+                notFoundCount: 0,
+                noMatchCount: 0,
+                errorCount: uniqueFestivalIds.length,
+                results: uniqueFestivalIds.map((festivalId) => ({
+                    festivalId,
+                    status: "error" as const,
+                    message: "Gemini API Key가 설정되지 않아 AI 조사를 수행할 수 없습니다.",
+                })),
+            };
+        }
+
+        const festivalRecords = await this.getFestivalsByRequestedIds(uniqueFestivalIds);
+        const results: FestivalNaverUpdateItem[] = [];
+        let updatedCount = 0;
+        let unchangedCount = 0;
+        let notFoundCount = 0;
+        let noMatchCount = 0;
+        let errorCount = 0;
+
+        for (const festivalId of uniqueFestivalIds) {
+            const record = festivalRecords.get(festivalId);
+            const searchedAt = new Date().toISOString();
+            if (!record) {
+                notFoundCount += 1;
+                results.push({
+                    festivalId,
+                    status: "not-found",
+                    searchedAt,
+                    message: "선택한 페스티벌 정보를 DB에서 찾지 못했습니다.",
+                });
+                continue;
+            }
+
+            const { docId, festival } = record;
+            try {
+                const { output, patch, updatedFields, mergedDetails } = await this.researchFestivalWithGemini(festival);
+                const researched = {
+                    ticketPrice: output.ticketPrice || undefined,
+                    venue: output.venue || undefined,
+                    lineup: output.lineup || undefined,
+                    performanceSchedule: output.performanceSchedule || undefined,
+                    bookingSite: output.bookingSite || undefined,
+                    sourceUrl: festival.sourceUrl,
+                    startDate: output.startDate || festival.startDate,
+                    endDate: output.endDate || festival.endDate,
+                    location: output.venue || festival.location,
+                    price: output.ticketPrice || festival.price,
+                    homepage: output.bookingSite || festival.homepage,
+                    description: output.evidenceSummary || undefined,
+                    details: mergedDetails.length > 0 ? mergedDetails : undefined,
+                };
+
+                const requiredFieldChecklist = [
+                    { label: "티켓 가격", value: researched.ticketPrice },
+                    { label: "공연 장소", value: researched.venue },
+                    { label: "라인업", value: researched.lineup },
+                    { label: "공연 일정", value: researched.performanceSchedule },
+                    { label: "예매처", value: researched.bookingSite },
+                ];
+                const missingRequiredFields = requiredFieldChecklist
+                    .filter((field) => !field.value || field.value.trim().length === 0)
+                    .map((field) => field.label);
+                const requiredFieldSummaryMessage = missingRequiredFields.length === 0
+                    ? "요청한 필수 조사 항목 5개를 모두 확보했습니다."
+                    : `필수 조사 항목 미확보: ${missingRequiredFields.join(", ")}`;
+
+                if (requiredFieldChecklist.every((field) => !field.value || field.value.trim().length === 0)) {
+                    noMatchCount += 1;
+                    results.push({
+                        festivalId,
+                        title: festival.title,
+                        status: "no-match",
+                        searchedAt,
+                        researched,
+                        message: `Gemini 조사에서 필수 항목 근거를 충분히 찾지 못했습니다. ${requiredFieldSummaryMessage}`,
+                    });
+                    continue;
+                }
+                if (updatedFields.length === 0) {
+                    unchangedCount += 1;
+                    results.push({
+                        festivalId,
+                        title: festival.title,
+                        status: "unchanged",
+                        searchedAt,
+                        researched,
+                        message: `업데이트할 변경점이 없습니다. ${requiredFieldSummaryMessage}`,
+                    });
+                    continue;
+                }
+
+                await db.collection("festivals").doc(docId).set({
+                    ...patch,
+                    updatedAt: new Date().toISOString(),
+                }, { merge: true });
+
+                updatedCount += 1;
+                results.push({
+                    festivalId,
+                    title: festival.title,
+                    status: "updated",
+                    searchedAt,
+                    updatedFields,
+                    researched,
+                    message: requiredFieldSummaryMessage,
+                });
+            } catch (error) {
+                errorCount += 1;
+                results.push({
+                    festivalId,
+                    title: festival.title,
+                    status: "error",
+                    searchedAt,
+                    message: error instanceof Error ? error.message : "Gemini 기반 업데이트 처리 중 오류가 발생했습니다.",
+                });
+            }
+        }
+
+        if (updatedCount > 0) {
+            try {
+                const cachedFromDb = await this.fetchCachedFestivalsFromFirestore();
+                this.memoryCache = cachedFromDb;
+            } catch {
+                console.warn("Failed to refresh festival cache after AI research update.");
+            }
+        }
+
+        return {
+            requestedCount: uniqueFestivalIds.length,
+            processedCount: results.length,
+            updatedCount,
+            unchangedCount,
+            notFoundCount,
+            noMatchCount,
+            errorCount,
+            results,
+        };
+    }
+
+    // Backward compatibility for legacy route name.
+    async updateFestivalsByNaverSearch(festivalIds: string[]): Promise<FestivalNaverUpdateResult> {
+        return this.updateFestivalsByGeminiResearch(festivalIds);
     }
 
     async getFestivals(forceRefresh = false): Promise<UnifiedFestival[]> {

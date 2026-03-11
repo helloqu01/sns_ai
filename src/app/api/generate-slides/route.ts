@@ -9,12 +9,73 @@ const FREE_AI_URL = process.env.FREE_AI_URL || "https://text.pollinations.ai/ope
 const FREE_AI_MODEL = process.env.FREE_AI_MODEL || "openai";
 const FREE_AI_TIMEOUT_MS = Number.parseInt(process.env.FREE_AI_TIMEOUT_MS || "45000", 10);
 const FREE_AI_REASONING_EFFORT = process.env.FREE_AI_REASONING_EFFORT || "low";
+const DEFAULT_SLIDE_COUNT = 6;
+const MIN_SLIDE_COUNT = 1;
+const MAX_SLIDE_COUNT = 20;
+const MAX_GENERATION_ATTEMPTS = 3;
+const DEFAULT_KEYWORDS = "festival event poster social media korean campaign";
 
 type GeneratedSlide = {
   title: string;
   body: string;
   keywords: string;
 };
+
+type SlideGenerationProvider = "gemini" | "free-ai";
+type SlideGenerationResult = { text: string; provider: SlideGenerationProvider };
+type SlideValidationResult = { slides: GeneratedSlide[]; blockingIssues: string[] };
+
+const asNonEmptyString = (value: unknown) => {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+};
+
+const toSafeSlideCount = (value: unknown) => {
+  const parsed = typeof value === "number"
+    ? value
+    : Number.parseInt(typeof value === "string" ? value : String(DEFAULT_SLIDE_COUNT), 10);
+  if (!Number.isFinite(parsed)) return DEFAULT_SLIDE_COUNT;
+  const rounded = Math.round(parsed);
+  return Math.min(Math.max(rounded, MIN_SLIDE_COUNT), MAX_SLIDE_COUNT);
+};
+
+const countChars = (value: string) => Array.from(value).length;
+const trimToChars = (value: string, maxChars: number) => Array.from(value).slice(0, maxChars).join("");
+
+const extractFestivalTitle = (content: string) => {
+  const normalized = content.replace(/\r/g, "").trim();
+  if (!normalized) return "행사명 미정";
+
+  const labeledMatch = normalized.match(/(?:^|\n)\s*(?:공연명|행사명|축제명|페스티벌명|제목)\s*[:：]\s*(.+)/i);
+  if (labeledMatch?.[1]) {
+    const labeledTitle = labeledMatch[1].split("\n")[0]?.trim();
+    if (labeledTitle) return labeledTitle;
+  }
+
+  const lines = normalized
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return "행사명 미정";
+
+  const metadataPrefixPattern = /^(?:장소|기간|일시|시간|문의|가격|요금|출연|라인업)\s*[:：]/i;
+  const candidate = lines.find((line) => !metadataPrefixPattern.test(line)) || lines[0];
+  return candidate.replace(/^[\-*\s]+/, "").trim() || "행사명 미정";
+};
+
+const sanitizeSlideBody = (body: string) => {
+  const normalizedBody = body.trim();
+  return normalizedBody.replace(/\n?Source:\s*.+$/i, "").trim();
+};
+
+const normalizeForDuplicateCheck = (value: string) =>
+  value
+    .toLowerCase()
+    .replace(/\n?Source:\s*.+$/i, "")
+    .replace(/[^a-z0-9가-힣]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
 const getUidFromRequest = async (req: NextRequest) => {
   const authHeader = req.headers.get("authorization") || "";
@@ -136,6 +197,108 @@ const buildFreeAiPrompt = (prompt: string, slideCount: number) => `${prompt}
 - 각 slide는 title, body, keywords를 반드시 포함하세요.
 `;
 
+const parseSlidesFromAiText = (text: string): Array<Record<string, unknown>> => {
+  const parsed = JSON.parse(extractJsonText(text)) as { slides?: unknown };
+  if (!Array.isArray(parsed.slides)) {
+    throw new Error("AI response does not include a valid slides array.");
+  }
+  return parsed.slides.map((slide) => (slide && typeof slide === "object" ? slide as Record<string, unknown> : {}));
+};
+
+const validateAndNormalizeSlides = (params: {
+  rawSlides: Array<Record<string, unknown>>;
+  slideCount: number;
+  festivalTitle: string;
+}): SlideValidationResult => {
+  const blockingIssues: string[] = [];
+  if (params.rawSlides.length !== params.slideCount) {
+    blockingIssues.push(
+      `슬라이드 수 불일치 (요청 ${params.slideCount}개 / 응답 ${params.rawSlides.length}개)`,
+    );
+  }
+
+  const slides: GeneratedSlide[] = [];
+  for (let index = 0; index < params.slideCount; index += 1) {
+    const rawSlide = params.rawSlides[index] || {};
+    const rawTitle = asNonEmptyString(rawSlide.title);
+    const rawBody = asNonEmptyString(rawSlide.body) || asNonEmptyString(rawSlide.content);
+    const rawKeywords = asNonEmptyString(rawSlide.keywords);
+
+    if (index !== 0 && !rawTitle) {
+      blockingIssues.push(`${index + 1}번 슬라이드 title 누락`);
+    }
+    if (index !== 0 && !rawBody) {
+      blockingIssues.push(`${index + 1}번 슬라이드 body 누락`);
+    }
+
+    const title = index === 0
+      ? params.festivalTitle
+      : (() => {
+        const titleBase = rawTitle || `슬라이드 ${index + 1}`;
+        return countChars(titleBase) > 20 ? trimToChars(titleBase, 20) : titleBase;
+      })();
+    const body = index === 0
+      ? ""
+      : sanitizeSlideBody(forceSentenceEnding(rawBody || "핵심 정보를 확인하세요."));
+
+    slides.push({
+      title,
+      body,
+      keywords: rawKeywords || DEFAULT_KEYWORDS,
+    });
+  }
+
+  const seenTitles = new Map<string, number>();
+  const seenBodies = new Map<string, number>();
+  slides.forEach((slide, index) => {
+    const normalizedTitle = normalizeForDuplicateCheck(slide.title);
+    const normalizedBody = normalizeForDuplicateCheck(slide.body);
+
+    if (normalizedTitle) {
+      const seenIndex = seenTitles.get(normalizedTitle);
+      if (seenIndex !== undefined) {
+        blockingIssues.push(`중복 title 감지 (${seenIndex + 1}번, ${index + 1}번)`);
+      } else {
+        seenTitles.set(normalizedTitle, index);
+      }
+    }
+
+    if (normalizedBody) {
+      const seenIndex = seenBodies.get(normalizedBody);
+      if (seenIndex !== undefined) {
+        blockingIssues.push(`중복 body 감지 (${seenIndex + 1}번, ${index + 1}번)`);
+      } else {
+        seenBodies.set(normalizedBody, index);
+      }
+    }
+  });
+
+  return { slides, blockingIssues };
+};
+
+const buildRepairPrompt = (params: {
+  originalPrompt: string;
+  previousSlides: GeneratedSlide[];
+  blockingIssues: string[];
+  slideCount: number;
+}) => {
+  const previousSlidesText = JSON.stringify({ slides: params.previousSlides }, null, 2);
+  const issuesText = params.blockingIssues.slice(0, 12).map((issue, idx) => `${idx + 1}. ${issue}`).join("\n");
+  return `${params.originalPrompt}
+
+[검증 실패 항목 - 반드시 수정]
+${issuesText}
+
+[직전 출력(JSON)]
+${previousSlidesText}
+
+[재생성 지시]
+- 위 실패 항목만 우선적으로 수정하세요.
+- 반드시 정확히 ${params.slideCount}개의 slides를 반환하세요.
+- 오직 JSON만 반환하세요.
+`;
+};
+
 const forceSentenceEnding = (text: string) => {
   const trimmed = text.trim();
   if (!trimmed) return "핵심 정보를 확인하세요.";
@@ -146,9 +309,8 @@ const forceSentenceEnding = (text: string) => {
 const buildRuleBasedSlides = (
   content: string,
   slideCount: number,
-  source?: string,
+  festivalTitle: string,
 ): GeneratedSlide[] => {
-  const sourceText = source?.trim() || "입력 데이터";
   const cleaned = content.replace(/\s+/g, " ").trim();
   const pieces = cleaned
     .split(/[.!?\n]+/)
@@ -160,13 +322,13 @@ const buildRuleBasedSlides = (
   for (let i = 0; i < slideCount; i += 1) {
     const piece = basePieces[i % basePieces.length];
     const title = i === 0
-      ? "핵심 기획안"
+      ? festivalTitle
       : `포인트 ${i + 1}`;
-    const bodyCore = forceSentenceEnding(piece);
+    const bodyCore = i === 0 ? "" : forceSentenceEnding(piece);
     slides.push({
-      title: title.slice(0, 20),
-      body: `${bodyCore}\nSource: ${sourceText}`,
-      keywords: "festival event poster social media korean campaign",
+      title: i === 0 ? title : title.slice(0, 20),
+      body: bodyCore,
+      keywords: DEFAULT_KEYWORDS,
     });
   }
   return slides;
@@ -201,17 +363,11 @@ const buildRuleBasedCaption = (params: {
       ? "이번 카드뉴스, 저장각 포인트만 감도 있게 정리해봤어요."
       : "이번 카드뉴스 핵심만 보기 좋게 정리해봤어요.";
 
-  const closer = params.captionStyle === "promotional"
-    ? "저장해두고 Canva에서 마무리한 뒤 바로 업로드해보세요."
-    : params.captionStyle === "minimal"
-      ? "저장해두고 필요할 때 바로 꺼내보세요."
-      : "저장해두고 Canva에서 문구를 조금만 다듬어 바로 활용해보세요.";
+  const closer = "📌 저장해두고 놓치지 마세요!";
 
   return [
     opener,
-    titles.length > 0 ? `오늘 체크할 포인트: ${titles.join(" · ")}` : null,
     closer,
-    params.sourceLabel ? `Source: ${params.sourceLabel}` : null,
     hashtags || "#페스티벌 #카드뉴스",
   ]
     .filter(Boolean)
@@ -262,7 +418,7 @@ const buildCaptionPrompt = (params: {
 3. 스타일은 ${params.style || "카드뉴스"} 톤을 유지하세요.
 4. 장르/카테고리(${params.genre || "일반"}) 특성이 보이게 작성하세요.
 5. 마지막에는 해시태그 3~5개를 자연스럽게 붙이세요.
-6. 출처가 있으면 본문 마지막 근처에 "Source: ${params.sourceLabel || params.source}"를 한 번 포함하세요.
+6. "Canva", "카드뉴스 제작", "업로드", "Source:" 같은 내부 작업 흔적은 절대 포함하지 마세요.
 
 [원문 정보]
 ${params.content}
@@ -375,6 +531,25 @@ const generateWithFreeAi = async (prompt: string, slideCount: number) => {
   }
 };
 
+const generateSlidesText = async (
+  selectedModel: typeof geminiFlashModel,
+  prompt: string,
+  slideCount: number,
+): Promise<SlideGenerationResult> => {
+  try {
+    const result = await selectedModel.generateContent(prompt);
+    const response = await result.response;
+    return { text: response.text(), provider: "gemini" };
+  } catch (geminiError) {
+    if (!isQuotaExceededError(geminiError)) {
+      throw geminiError;
+    }
+    console.warn("Gemini quota exceeded. Falling back to free AI provider.");
+    const text = await generateWithFreeAi(prompt, slideCount);
+    return { text, provider: "free-ai" };
+  }
+};
+
 export async function POST(req: NextRequest) {
   try {
     const uid = await getUidFromRequest(req);
@@ -382,28 +557,29 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const {
-      content,
-      style,
-      target,
-      aspectRatio = "4:5",
-      genre,
-      source,
-      sourceLabel,
-      imageUrl,
-      slideCount = 6,
-      tone = "friendly",
-      captionStyle = "balanced",
-    } = await req.json();
+    const requestBody = await req.json();
+    const content = asNonEmptyString(requestBody?.content);
+    const style = asNonEmptyString(requestBody?.style) || undefined;
+    const target = asNonEmptyString(requestBody?.target) || undefined;
+    const aspectRatio = asNonEmptyString(requestBody?.aspectRatio) || "4:5";
+    const genre = asNonEmptyString(requestBody?.genre) || undefined;
+    const source = asNonEmptyString(requestBody?.source) || undefined;
+    const sourceLabel = asNonEmptyString(requestBody?.sourceLabel) || undefined;
+    const imageUrl = asNonEmptyString(requestBody?.imageUrl) || undefined;
+    const slideCount = toSafeSlideCount(requestBody?.slideCount);
+    const tone = asNonEmptyString(requestBody?.tone) || "friendly";
+    const captionStyle = asNonEmptyString(requestBody?.captionStyle) || "balanced";
+    const sourceText = sourceLabel || source || "입력 데이터";
+    const festivalTitle = extractFestivalTitle(content || "");
 
     if (!content) {
       return NextResponse.json({ error: "Content is required" }, { status: 400 });
     }
 
-    const isTrendySource = source === 'FESTIVAL_LIFE';
+    const isTrendySource = source === "FESTIVAL_LIFE";
     const trendyContext = isTrendySource
       ? `\n- 특이사항: 이 정보는 MZ세대에게 가장 핫한 트렌디 매체(페스티벌 라이프)에서 수집되었습니다. 더욱 힙하고 바이럴될 수 있는 톤앤매너를 유지하세요.`
-      : `\n- 특이사항: 이 정보는 ${sourceLabel || source}에서 제공된 검증된 문화예술 정보입니다.`;
+      : `\n- 특이사항: 이 정보는 ${sourceText}에서 제공된 검증된 문화예술 정보입니다.`;
 
     // Define adaptive planning guide based on slide count
     let slideGuide = "";
@@ -412,9 +588,13 @@ export async function POST(req: NextRequest) {
 - 목표: 핵심 요약과 강렬한 인상
 - 가이드: 텍스트를 최소화하고 비주얼 키워드 중심으로 구성하세요. 호흡이 매우 빨라야 합니다.`;
     } else if (slideCount <= 10) {
-      slideGuide = `[표준 매거진 모드 (4-10장)]
-- 목표: 기승전결이 있는 정석 구조
-- 구조: 도입(1) - 문제제기/흥미유발(1) - 정보전달(2~${slideCount - 2}) - 마무리/CTA(1)`;
+      slideGuide = `[슬라이드 역할 분배 - 반드시 이 순서를 따르세요]
+슬라이드 1 (COVER): 행사명을 강렬하게. 부제목 1줄 추가. 이미지 비중 최대.
+슬라이드 2 (HOOK): 숫자, 질문, 또는 강한 선언형 카피. "왜 이게 지금 핫한지" 한 문장으로.
+슬라이드 3~${slideCount - 1} (INFO): 슬라이드마다 딱 하나의 포인트만 다루세요.
+  - 일정/장소 슬라이드, 라인업 슬라이드, 티켓 정보 슬라이드 등으로 각각 분리.
+  - 절대 같은 내용을 반복하지 마세요.
+슬라이드 ${slideCount} (CTA): "저장하세요" 또는 "공유하면 같이 가요" 등 행동 유도로 마무리.`;
     } else {
       slideGuide = `[딥다이브 매거진 모드 (11-20장)]
 - 목표: 종합 가이드 및 심층 정보
@@ -424,13 +604,15 @@ export async function POST(req: NextRequest) {
     const prompt = `
 당신은 인스타그램 카드뉴스 제작 전문가입니다.
 제공된 내용을 바탕으로 아래 '분량별 기획 가이드'에 맞게 카드뉴스 기획안을 작성해주세요.${trendyContext}
-출처 정보: ${sourceLabel || source}
+출처 정보: ${sourceText}
 
 [제작 원칙]
-1. 각 슬라이드의 'Caption' 마지막 줄에는 반드시 "Source: ${sourceLabel || source}"를 포함하세요.
-2. 장르(${genre})의 특성을 살려 타겟(${target})에게 매력적으로 보이도록 작성하세요.
-3. 반드시 요청한 개수(${slideCount}개)의 슬라이드를 생성하세요.
-4. 최종 결과물은 ${aspectRatio} 배율에 맞게 텍스트 길이와 정보량을 조절하세요.
+1. 슬라이드 1은 제목(title)에 페스티벌/공연명 "${festivalTitle}"만 넣고, body는 반드시 빈 문자열("")로 작성하세요.
+2. 슬라이드 2부터는 각 슬라이드의 body에 핵심 메시지만 작성하고 "Source:" 표기는 넣지 마세요.
+3. 장르(${genre || "일반"})의 특성을 살려 타겟(${target || "일반 독자"})에게 매력적으로 보이도록 작성하세요.
+4. 반드시 요청한 개수(${slideCount}개)의 슬라이드를 생성하세요.
+5. 최종 결과물은 ${aspectRatio} 배율에 맞게 텍스트 길이와 정보량을 조절하세요.
+6. 슬라이드 텍스트에 "Source:", "Canva", 내부 제작 도구 관련 문구를 절대 포함하지 마세요.
 
 ${slideGuide}
 
@@ -440,15 +622,21 @@ ${slideGuide}
 
 [입력 정보]
 - 내용: ${content}
-- 장르/카테고리: ${genre || '일반'}
-- 뉴스레터 스타일: ${style}
-- 타겟 독자: ${target}
+- 장르/카테고리: ${genre || "일반"}
+- 뉴스레터 스타일: ${style || "카드뉴스"}
+- 타겟 독자: ${target || "일반 독자"}
 - 캡션 톤: ${tone}
 - 캡션 스타일: ${captionStyle}
 
 [텍스트 제약 조건]
 - Headline (title): 반드시 20자 이내로 작성.
-- Body: 가독성을 위해 불필요한 미사여구를 빼고 '다', '요'로 끝나는 명확한 문장 사용.
+- Body:
+  - 최대 3줄. 한 줄에 15자 이내를 권장.
+  - 줄바꿈(\\n)으로 리듬을 만드세요. 한 문장이 한 줄.
+  - 설명하지 말고 선언하세요. "~할 수 있습니다" 같은 서술형 금지.
+  - 각 슬라이드는 반드시 이전 슬라이드와 다른 내용을 다뤄야 합니다.
+  - 좋은 예: "딱 2일만 열려요.\\n매년 매진되는 그 페스타.\\n올해도 어김없이."
+  - 나쁜 예: "행사명: OOO 행사 일정: OOO 행사 장소: OOO"
 - 모든 결과물은 한국어 마케팅 어조를 사용해야 함.
 
 [응답 형식]
@@ -466,56 +654,97 @@ ${slideGuide}
 
     // Model selection: Use Pro for 15+ slides
     const selectedModel = slideCount >= 15 ? geminiProModel : geminiFlashModel;
-    console.log(`Using model: ${slideCount >= 15 ? 'Gemini 1.5 Pro' : 'Gemini 1.5 Flash'} for ${slideCount} slides`);
+    console.log(`Using model: ${slideCount >= 15 ? "Gemini Pro-tier" : "Gemini Flash-tier"} for ${slideCount} slides`);
 
-    let text = "";
-    let aiProvider: "gemini" | "free-ai" = "gemini";
-    try {
-      const result = await selectedModel.generateContent(prompt);
-      const response = await result.response;
-      text = response.text();
-    } catch (geminiError) {
-      if (!isQuotaExceededError(geminiError)) {
-        throw geminiError;
-      }
-      console.warn("Gemini quota exceeded. Falling back to free AI provider.");
-      aiProvider = "free-ai";
+    let aiProvider: SlideGenerationProvider = "gemini";
+    let safeSlides: GeneratedSlide[] = [];
+    let validationIssues: string[] = [];
+    let passedValidation = false;
+    let currentPrompt = prompt;
+
+    for (let attempt = 1; attempt <= MAX_GENERATION_ATTEMPTS; attempt += 1) {
+      let generationResult: SlideGenerationResult;
       try {
-        text = await generateWithFreeAi(prompt, slideCount);
-      } catch (freeAiError) {
-        console.warn("Free AI provider failed. Falling back to rule-based slide generator.", freeAiError);
-        text = JSON.stringify({
-          slides: buildRuleBasedSlides(content, slideCount, sourceLabel || source),
+        generationResult = await generateSlidesText(selectedModel, currentPrompt, slideCount);
+      } catch (generationError) {
+        console.warn(`Slide generation failed at attempt ${attempt}.`, generationError);
+        if (attempt === MAX_GENERATION_ATTEMPTS) {
+          break;
+        }
+        currentPrompt = buildRepairPrompt({
+          originalPrompt: prompt,
+          previousSlides: safeSlides.length > 0 ? safeSlides : buildRuleBasedSlides(content, slideCount, festivalTitle),
+          blockingIssues: [
+            generationError instanceof Error
+              ? generationError.message
+              : "모델 호출 실패로 재시도합니다.",
+          ],
+          slideCount,
         });
+        continue;
       }
+
+      if (generationResult.provider === "free-ai") {
+        aiProvider = "free-ai";
+      }
+
+      let rawSlides: Array<Record<string, unknown>>;
+      try {
+        rawSlides = parseSlidesFromAiText(generationResult.text);
+      } catch (parseError) {
+        validationIssues = [
+          parseError instanceof Error ? `JSON 파싱 실패: ${parseError.message}` : "JSON 파싱 실패",
+        ];
+        if (attempt === MAX_GENERATION_ATTEMPTS) {
+          break;
+        }
+        currentPrompt = buildRepairPrompt({
+          originalPrompt: prompt,
+          previousSlides: safeSlides.length > 0 ? safeSlides : buildRuleBasedSlides(content, slideCount, festivalTitle),
+          blockingIssues: validationIssues,
+          slideCount,
+        });
+        continue;
+      }
+
+      const validated = validateAndNormalizeSlides({
+        rawSlides,
+        slideCount,
+        festivalTitle,
+      });
+      safeSlides = validated.slides;
+      validationIssues = validated.blockingIssues;
+
+      if (validationIssues.length === 0) {
+        passedValidation = true;
+        break;
+      }
+      if (attempt === MAX_GENERATION_ATTEMPTS) {
+        break;
+      }
+
+      currentPrompt = buildRepairPrompt({
+        originalPrompt: prompt,
+        previousSlides: safeSlides,
+        blockingIssues: validationIssues,
+        slideCount,
+      });
     }
 
-    let data: { slides?: Array<Record<string, unknown>> } = {};
-    try {
-      data = JSON.parse(extractJsonText(text));
-    } catch (parseError) {
-      if (aiProvider !== "free-ai") {
-        throw parseError;
+    if (!passedValidation) {
+      if (safeSlides.length === 0) {
+        safeSlides = buildRuleBasedSlides(content, slideCount, festivalTitle);
+        validationIssues = ["검증 가능한 슬라이드를 생성하지 못해 규칙 기반 결과로 대체했습니다."];
+      } else {
+        console.warn("Returning best-effort slides after validation retries.", validationIssues);
       }
-      console.warn("Failed to parse free AI JSON. Using rule-based slides.", parseError);
-      data = {
-        slides: buildRuleBasedSlides(content, slideCount, sourceLabel || source),
-      };
     }
 
     // Inject imageUrl into the first slide (Intro) if provided
-    if (imageUrl && data.slides && data.slides.length > 0) {
-      data.slides[0].image = imageUrl;
+    if (imageUrl && safeSlides.length > 0) {
+      (safeSlides[0] as GeneratedSlide & { image?: string }).image = imageUrl;
     }
 
-    // Data Integrity Validation: Check if count matches
-    if (data.slides && data.slides.length !== slideCount) {
-      console.warn(`AI generated ${data.slides.length} slides, but ${slideCount} were requested. Adjusting...`);
-      // If AI failed to match count, we might need a fallback or just return what we got
-      // For now, we return as is but log the inconsistency
-    }
-
-    const safeSlides = Array.isArray(data.slides) ? data.slides : [];
     const caption = safeSlides.length > 0
       ? await generateCaptionFromSlides({
         slides: safeSlides,
@@ -552,7 +781,7 @@ ${slideGuide}
       }
     }
 
-    return NextResponse.json({ ...data, slides: safeSlides, caption, draftId, aiProvider });
+    return NextResponse.json({ slides: safeSlides, caption, draftId, aiProvider, validationIssues });
 
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Internal Server Error";

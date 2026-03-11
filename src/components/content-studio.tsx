@@ -659,13 +659,27 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
   };
 
   const handleFestivalSelect = (f: UnifiedFestival) => {
-    const festivalInfo = `${f.title}\n장소: ${f.location}\n기간: ${f.startDate} ~ ${f.endDate}`;
-    setInputText(festivalInfo);
+    const detailsText = Array.isArray(f.details) && f.details.length > 0
+      ? f.details.map((d: { label: string; value: string }) =>
+          `${d.label}: ${d.value}`).join('\n')
+      : null;
+
+    const parts = [
+      f.title,
+      f.location ? `장소: ${f.location}` : null,
+      f.startDate && f.endDate ? `기간: ${f.startDate} ~ ${f.endDate}` : null,
+      f.lineup ? `라인업: ${f.lineup}` : null,
+      f.price ? `티켓 가격: ${f.price}` : null,
+      f.homepage ? `공식 홈페이지: ${f.homepage}` : null,
+      detailsText ? `상세 정보:\n${detailsText}` : null,
+      f.description ? `본문: ${f.description.slice(0, 600)}` : null,
+    ].filter(Boolean);
+
+    setInputText(parts.join('\n'));
     setGenre(f.genre || '');
     setSource(f.source);
     setSourceLabel(f.sourceLabel || f.source);
     setImageUrl(f.imageUrl || '');
-
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
