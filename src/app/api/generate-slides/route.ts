@@ -557,18 +557,20 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const requestBody = await req.json();
-    const content = asNonEmptyString(requestBody?.content);
-    const style = asNonEmptyString(requestBody?.style) || undefined;
-    const target = asNonEmptyString(requestBody?.target) || undefined;
-    const aspectRatio = asNonEmptyString(requestBody?.aspectRatio) || "4:5";
-    const genre = asNonEmptyString(requestBody?.genre) || undefined;
-    const source = asNonEmptyString(requestBody?.source) || undefined;
-    const sourceLabel = asNonEmptyString(requestBody?.sourceLabel) || undefined;
-    const imageUrl = asNonEmptyString(requestBody?.imageUrl) || undefined;
-    const slideCount = toSafeSlideCount(requestBody?.slideCount);
-    const tone = asNonEmptyString(requestBody?.tone) || "friendly";
-    const captionStyle = asNonEmptyString(requestBody?.captionStyle) || "balanced";
+    const payload = await req.json() as Record<string, unknown>;
+    const content = asNonEmptyString(payload?.content);
+    const style = asNonEmptyString(payload?.style) || undefined;
+    const target = asNonEmptyString(payload?.target) || undefined;
+    const aspectRatio = asNonEmptyString(payload?.aspectRatio) || "4:5";
+    const genre = asNonEmptyString(payload?.genre) || undefined;
+    const source = asNonEmptyString(payload?.source) || undefined;
+    const sourceLabel = asNonEmptyString(payload?.sourceLabel) || undefined;
+    const imageUrl = asNonEmptyString(payload?.imageUrl) || undefined;
+    const slideCount = toSafeSlideCount(payload?.slideCount);
+    const tone = asNonEmptyString(payload?.tone) || "friendly";
+    const captionStyle = asNonEmptyString(payload?.captionStyle) || "balanced";
+    const angle = typeof payload.angle === "string" ? payload.angle : null;
+    const angleHook = typeof payload.angleHook === "string" ? payload.angleHook : null;
     const sourceText = sourceLabel || source || "입력 데이터";
     const festivalTitle = extractFestivalTitle(content || "");
 
@@ -601,11 +603,16 @@ export async function POST(req: NextRequest) {
 - 가이드: 페스티벌 라인업, 타임테이블, 준비물, 근처 맛집, 꿀팁 등 모든 세부 정보를 스토리텔링 형식으로 연결하세요. 페이지 간의 연결성을 극대화하세요.`;
     }
 
+    const angleContext = angle && angleHook
+      ? `\n[앵글 전략 - 최우선 적용]\n이 카드뉴스는 "${angleHook}" 메시지를 중심으로 구성해야 합니다.\n첫 슬라이드부터 마지막 슬라이드까지 이 앵글 하나로 일관되게 만들어주세요.\n정보를 나열하지 말고, 선택한 앵글의 감정과 메시지가 전달되도록 카피를 작성하세요.\n`
+      : "";
+
     const prompt = `
 당신은 인스타그램 카드뉴스 제작 전문가입니다.
 제공된 내용을 바탕으로 아래 '분량별 기획 가이드'에 맞게 카드뉴스 기획안을 작성해주세요.${trendyContext}
 출처 정보: ${sourceText}
 
+${angleContext}
 [제작 원칙]
 1. 슬라이드 1은 제목(title)에 페스티벌/공연명 "${festivalTitle}"만 넣고, body는 반드시 빈 문자열("")로 작성하세요.
 2. 슬라이드 2부터는 각 슬라이드의 body에 핵심 메시지만 작성하고 "Source:" 표기는 넣지 마세요.

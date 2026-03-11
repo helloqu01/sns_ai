@@ -1422,6 +1422,8 @@ export default function InstagramAiPage() {
             angle: angleSelection.type,
             angleHook: angleSelection.hook,
           } : {}),
+          angle: selectedPlanAngle?.type ?? null,
+          angleHook: selectedPlanAngle?.hook ?? null,
           style: planStyle,
           target: planTarget,
           aspectRatio: planAspectRatio,
@@ -1520,6 +1522,7 @@ export default function InstagramAiPage() {
     planStyle,
     planTarget,
     registerFailureEvent,
+    selectedPlanAngle,
     suggestedPlanAngles,
   ]);
 
