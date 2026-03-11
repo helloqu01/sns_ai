@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
     const body = (await req.json().catch(() => ({}))) as { limit?: unknown };
     const limitValue = typeof body.limit === "number" ? body.limit : Number.parseInt(String(body.limit || "1"), 10);
     const parsedLimit = Number.isNaN(limitValue) ? 1 : limitValue;
-    const limit = Math.max(1, Math.min(parsedLimit, 1));
+    const limit = Math.max(1, Math.min(parsedLimit, 5));
 
     const result = await processDueInstagramPublishingRecords(uid, limit);
     return NextResponse.json(result);

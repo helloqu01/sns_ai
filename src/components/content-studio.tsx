@@ -38,6 +38,16 @@ const sortOptions: { id: 'date-asc' | 'date-desc'; label: string }[] = [
 const FESTIVALS_PER_PAGE = 30;
 const INTEREST_SCORE_THRESHOLD = 0;
 const SHOW_FESTIVAL_SOURCE_SECTION = false;
+const SUGGESTED_ANGLE_TYPES = new Set([
+  'SCARCITY',
+  'LINEUP',
+  'VIBE',
+  'TIP',
+  'VALUE',
+  'TREND',
+  'TOGETHER',
+  'STORY',
+]);
 
 type CanvaTemplateOption = {
   id: string;
@@ -154,9 +164,57 @@ type SavedCardnewsItemResponse = {
   error?: string;
 };
 
+type AngleType = 'SCARCITY' | 'LINEUP' | 'VIBE' | 'TIP' | 'VALUE' | 'TREND' | 'TOGETHER' | 'STORY';
+
+type SuggestedAngle = {
+  type: AngleType;
+  label: string;
+  hook: string;
+  description: string;
+};
+
+type angle = SuggestedAngle;
+
+type SuggestAnglesResponse = {
+  angles?: unknown;
+  error?: string;
+};
+
 type ContentStudioProps = {
   embedded?: boolean;
   selectedCardnewsId?: string | null;
+};
+
+const asSuggestedAngleType = (value: unknown): AngleType | null => {
+  if (typeof value !== 'string') return null;
+  return SUGGESTED_ANGLE_TYPES.has(value) ? (value as AngleType) : null;
+};
+
+const normalizeSuggestedAngles = (value: unknown): SuggestedAngle[] => {
+  if (!Array.isArray(value)) return [] as SuggestedAngle[];
+
+  const normalized = value
+    .map((item): SuggestedAngle | null => {
+      if (!item || typeof item !== 'object') return null;
+      const raw = item as Record<string, unknown>;
+      const type = asSuggestedAngleType(raw.type);
+      const label = typeof raw.label === 'string' ? raw.label.trim() : '';
+      const hook = typeof raw.hook === 'string' ? raw.hook.trim() : '';
+      const description = typeof raw.description === 'string' ? raw.description.trim() : '';
+      if (!type || !label || !hook || !description) return null;
+      return { type, label, hook, description };
+    })
+    .filter((item): item is SuggestedAngle => Boolean(item));
+
+  return normalized.slice(0, 3);
+};
+
+const buildAngleHintsContent = (angles: SuggestedAngle[]) => {
+  if (angles.length === 0) return '';
+  const lines = angles.map((angle, index) =>
+    `${index + 1}. ${angle.label}(${angle.type})\n- hook: ${angle.hook}\n- description: ${angle.description}`,
+  );
+  return `[추천 콘텐츠 앵글]\n${lines.join('\n')}`;
 };
 
 export default function ContentStudio({ embedded = false, selectedCardnewsId = null }: ContentStudioProps) {
@@ -179,6 +237,10 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
   const [generatedSlides, setGeneratedSlides] = useState<Slide[]>([]);
   const [captionText, setCaptionText] = useState('');
   const [draftId, setDraftId] = useState<string | null>(null);
+  const [suggestedAngles, setSuggestedAngles] = useState<angle[]>([]);
+  const [selectedAngle, setSelectedAngle] = useState<angle | null>(null);
+  const [isLoadingAngles, setIsLoadingAngles] = useState(false);
+  const [showAngleSelector, setShowAngleSelector] = useState(false);
   const [isPublishing, setIsPublishing] = useState(false);
   const [publishError, setPublishError] = useState<string | null>(null);
   const [publishSuccessAt, setPublishSuccessAt] = useState<number | null>(null);
@@ -658,6 +720,44 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
     festivalListRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  const requestSuggestedAngles = useCallback(async (contentOverride?: string) => {
+    const targetContent = (contentOverride ?? inputText).trim();
+    if (!targetContent) {
+      setSuggestedAngles([]);
+      setSelectedAngle(null);
+      setShowAngleSelector(false);
+      return [] as angle[];
+    }
+
+    setShowAngleSelector(true);
+    setIsLoadingAngles(true);
+    setSelectedAngle(null);
+
+    try {
+      const headers = await buildAuthHeaders(true);
+      const suggestAnglesResponse = await fetch('/api/suggest-angles', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ content: targetContent }),
+      });
+      const suggestAnglesData = (await suggestAnglesResponse.json().catch(() => ({}))) as SuggestAnglesResponse;
+      if (!suggestAnglesResponse.ok) {
+        setSuggestedAngles([]);
+        return [] as angle[];
+      }
+
+      const nextAngles = normalizeSuggestedAngles(suggestAnglesData.angles);
+      setSuggestedAngles(nextAngles);
+      return nextAngles;
+    } catch (suggestAnglesError) {
+      console.warn('Failed to load suggested angles:', suggestAnglesError);
+      setSuggestedAngles([]);
+      return [] as angle[];
+    } finally {
+      setIsLoadingAngles(false);
+    }
+  }, [buildAuthHeaders, inputText]);
+
   const handleFestivalSelect = (f: UnifiedFestival) => {
     const detailsText = Array.isArray(f.details) && f.details.length > 0
       ? f.details.map((d: { label: string; value: string }) =>
@@ -675,11 +775,14 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
       f.description ? `본문: ${f.description.slice(0, 600)}` : null,
     ].filter(Boolean);
 
-    setInputText(parts.join('\n'));
+    const nextInputText = parts.join('\n');
+
+    setInputText(nextInputText);
     setGenre(f.genre || '');
     setSource(f.source);
     setSourceLabel(f.sourceLabel || f.source);
     setImageUrl(f.imageUrl || '');
+    void requestSuggestedAngles(nextInputText);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -759,21 +862,37 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
     }
   };
 
-  const handleGenerate = async () => {
+  const executeSlideGeneration = async (angleSelection: angle | null) => {
     if (!inputText) return;
+
     setIsGenerating(true);
     setPublishError(null);
     setPublishSuccessAt(null);
     setCanvaError(null);
-      setCanvaEditUrl(null);
+    setCanvaEditUrl(null);
 
     try {
       const headers = await buildAuthHeaders(true);
+      const angleHints = buildAngleHintsContent(suggestedAngles);
+      const selectedAngleBlock = angleSelection
+        ? `[사용자 선택 앵글]\n- type: ${angleSelection.type}\n- hook: ${angleSelection.hook}\n- description: ${angleSelection.description}`
+        : '';
+      const contentWithAngleHints = [
+        inputText,
+        angleHints || null,
+        selectedAngleBlock || null,
+      ].filter(Boolean).join('\n\n');
+
       const response = await fetch('/api/generate-slides', {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          content: inputText,
+          content: contentWithAngleHints,
+          angleHints: suggestedAngles,
+          ...(angleSelection ? {
+            angle: angleSelection.type,
+            angleHook: angleSelection.hook,
+          } : {}),
           style,
           target,
           aspectRatio: ratio,
@@ -793,6 +912,7 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
       setGeneratedSlides(data.slides || []);
       setCaptionText(typeof data.caption === 'string' ? data.caption : '');
       setDraftId(typeof data.draftId === 'string' ? data.draftId : null);
+      setShowAngleSelector(false);
       if (Array.isArray(data.slides) && data.slides.length > 0 && data.draftId) {
         setDraftCardnewsCount((prev) => (typeof prev === 'number' ? prev + 1 : 1));
       }
@@ -802,6 +922,27 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
     } finally {
       setIsGenerating(false);
     }
+  };
+
+  const handleGenerate = async () => {
+    if (!inputText) return;
+    setPublishError(null);
+    setPublishSuccessAt(null);
+    setCanvaError(null);
+    setCanvaEditUrl(null);
+    await requestSuggestedAngles();
+  };
+
+  const handleGenerateWithSelectedAngle = async () => {
+    if (!selectedAngle) {
+      setShowAngleSelector(true);
+      return;
+    }
+    await executeSlideGeneration(selectedAngle);
+  };
+
+  const handleGenerateWithoutAngle = async () => {
+    await executeSlideGeneration(null);
   };
 
   const handlePublish = async () => {
@@ -1083,10 +1224,91 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
                 </div>
                 <textarea
                   value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
+                  onChange={(e) => {
+                    setInputText(e.target.value);
+                    setShowAngleSelector(false);
+                    setSuggestedAngles([]);
+                    setSelectedAngle(null);
+                  }}
                   placeholder="행사 소개, 일정, 장소, 타겟 메시지 등을 입력하세요."
                   className="h-44 w-full resize-none rounded-[1.35rem] border-2 border-[var(--card-border)] bg-slate-50/80 p-4 text-sm font-medium outline-none transition-all focus:border-pink-500"
                 />
+
+                {showAngleSelector && (
+                  <div className="mt-4 rounded-[1.35rem] border border-slate-200 bg-white p-4">
+                    <div className="mb-3 text-xs font-black uppercase tracking-wider text-slate-500">
+                      추천 앵글 선택
+                    </div>
+
+                    {isLoadingAngles ? (
+                      <div className="grid gap-3 md:grid-cols-3">
+                        {Array.from({ length: 3 }).map((_, index) => (
+                          <div
+                            key={`angle-skeleton-${index}`}
+                            className="rounded-xl border border-slate-200 bg-slate-50 p-3"
+                          >
+                            <div className="h-4 w-20 animate-pulse rounded bg-slate-200" />
+                            <div className="mt-3 h-5 w-full animate-pulse rounded bg-slate-200" />
+                            <div className="mt-2 h-4 w-4/5 animate-pulse rounded bg-slate-200" />
+                          </div>
+                        ))}
+                      </div>
+                    ) : suggestedAngles.length > 0 ? (
+                      <div className="grid gap-3 md:grid-cols-3">
+                        {suggestedAngles.map((item) => {
+                          const isSelected = selectedAngle?.type === item.type;
+                          return (
+                            <button
+                              key={`${item.type}-${item.hook}`}
+                              type="button"
+                              onClick={() => setSelectedAngle(item)}
+                              className={cn(
+                                'rounded-xl border px-3 py-3 text-left transition-all',
+                                isSelected
+                                  ? 'border-pink-500 bg-pink-50 ring-2 ring-pink-200'
+                                  : 'border-slate-200 bg-white hover:border-slate-300',
+                              )}
+                            >
+                              <div className={cn('text-[11px] font-black', isSelected ? 'text-pink-700' : 'text-slate-700')}>
+                                {item.label}
+                              </div>
+                              <div className={cn('mt-2 text-sm font-black leading-snug', isSelected ? 'text-pink-800' : 'text-slate-900')}>
+                                {item.hook}
+                              </div>
+                              <div className="mt-2 text-[11px] font-bold text-slate-500">
+                                {item.description}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-xs font-bold text-amber-700">
+                        추천 앵글을 불러오지 못했습니다.
+                      </div>
+                    )}
+
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => { void handleGenerateWithSelectedAngle(); }}
+                        disabled={isGenerating || isLoadingAngles || !selectedAngle}
+                        className="inline-flex items-center justify-center rounded-xl bg-pink-600 px-4 py-2 text-xs font-black text-white transition-all hover:bg-pink-700 disabled:bg-pink-300"
+                      >
+                        이 앵글로 생성하기
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { void handleGenerateWithoutAngle(); }}
+                        disabled={isGenerating || isLoadingAngles}
+                        className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-black text-slate-700 transition-all hover:bg-slate-50 disabled:opacity-60"
+                      >
+                        AI한테 맡기기
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <button
                   onClick={handleGenerate}
                   disabled={isGenerating || !inputText}
@@ -1099,7 +1321,7 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
                   )}
                   {isGenerating
                     ? (slideCount >= 10 ? '기획안과 캡션을 작성 중입니다. 잠시만 기다려 주세요...' : 'AI 에디터가 기획안과 캡션을 구성 중입니다...')
-                    : '기획안 + 캡션 생성하기'
+                    : (showAngleSelector ? '앵글 다시 추천받기' : '앵글 추천받기')
                   }
                 </button>
               </div>

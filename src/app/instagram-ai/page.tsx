@@ -103,6 +103,25 @@ type QueueResponse = {
   error?: string;
 };
 
+type AngleType = string;
+
+type SuggestedAngle = {
+  type: AngleType;
+  label: string;
+  hook: string;
+  description: string;
+};
+
+type SuggestAnglesResponse = {
+  angles?: unknown;
+  error?: string;
+};
+
+type PlanGenerationContext = {
+  festival: UnifiedFestival;
+  content: string;
+};
+
 type FailureKind = "generation" | "upload";
 type FailureSource = "local" | "queue";
 
@@ -165,10 +184,51 @@ type GenerationResearchReport = {
 };
 
 const MAX_LOCAL_FAILURE_EVENTS = 40;
+const normalizeSuggestedAngles = (value: unknown): SuggestedAngle[] => {
+  if (!Array.isArray(value)) return [] as SuggestedAngle[];
+
+  const normalized = value
+    .map((item): SuggestedAngle | null => {
+      if (!item || typeof item !== "object") return null;
+      const raw = item as Record<string, unknown>;
+      const type = typeof raw.type === "string" && raw.type.trim()
+        ? raw.type.trim()
+        : "CUSTOM";
+      const label = typeof raw.label === "string" ? raw.label.trim() : "";
+      const hook = typeof raw.hook === "string" ? raw.hook.trim() : "";
+      const description = typeof raw.description === "string" ? raw.description.trim() : "";
+      if (!label && !hook && !description) return null;
+      return { type, label, hook, description };
+    })
+    .filter((item): item is SuggestedAngle => Boolean(item));
+
+  return normalized.slice(0, 3);
+};
+
+const buildAngleHintsContent = (angles: SuggestedAngle[]) => {
+  if (angles.length === 0) return "";
+  const lines = angles.map((angle, index) =>
+    `${index + 1}. ${angle.label}(${angle.type})\n- hook: ${angle.hook}\n- description: ${angle.description}`,
+  );
+  return `[추천 콘텐츠 앵글]\n${lines.join("\n")}`;
+};
 
 const sanitizeFailureMessage = (value: string | null | undefined) => {
   if (!value) return "";
   return value.replace(/\s+/g, " ").trim();
+};
+
+const isAiQuotaErrorMessage = (value: string | null | undefined) => {
+  const normalized = sanitizeFailureMessage(value).toLowerCase();
+  if (!normalized) return false;
+  return [
+    "quota",
+    "429",
+    "resource_exhausted",
+    "rate limit",
+    "too many requests",
+    "quota exceeded",
+  ].some((token) => normalized.includes(token));
 };
 
 const toTimestamp = (value: string | null | undefined) => {
@@ -382,20 +442,53 @@ const buildFestivalPlanContent = (festival: UnifiedFestival) => {
   ].filter(Boolean).join("\n");
 };
 
-const mergeFestivalForGeneration = (base: UnifiedFestival, incoming: UnifiedFestival | null): UnifiedFestival => {
-  if (!incoming) return base;
-  return {
-    ...base,
-    ...incoming,
-    imageUrl: incoming.imageUrl || base.imageUrl,
-    sourceLabel: incoming.sourceLabel || base.sourceLabel || base.source,
-    details: Array.isArray(incoming.details) && incoming.details.length > 0 ? incoming.details : base.details,
-    description: incoming.description || base.description,
-    lineup: incoming.lineup || base.lineup,
-    price: incoming.price || base.price,
-    homepage: incoming.homepage || base.homepage,
-    contact: incoming.contact || base.contact,
-  };
+const mergeFestivalResearchSnapshot = (
+  base: UnifiedFestival,
+  snapshot: FestivalResearchSnapshot | null | undefined,
+): UnifiedFestival => {
+  if (!snapshot) return base;
+  const next = { ...base };
+
+  const location = typeof snapshot.location === "string" && snapshot.location.trim()
+    ? snapshot.location.trim()
+    : (typeof snapshot.venue === "string" && snapshot.venue.trim() ? snapshot.venue.trim() : "");
+  if (location) next.location = location;
+
+  const lineup = typeof snapshot.lineup === "string" ? snapshot.lineup.trim() : "";
+  if (lineup) next.lineup = lineup;
+
+  const price = typeof snapshot.price === "string" && snapshot.price.trim()
+    ? snapshot.price.trim()
+    : (typeof snapshot.ticketPrice === "string" && snapshot.ticketPrice.trim() ? snapshot.ticketPrice.trim() : "");
+  if (price) next.price = price;
+
+  const homepage = typeof snapshot.homepage === "string" && snapshot.homepage.trim()
+    ? snapshot.homepage.trim()
+    : (typeof snapshot.bookingSite === "string" && snapshot.bookingSite.trim() ? snapshot.bookingSite.trim() : "");
+  if (homepage) next.homepage = homepage;
+
+  const description = typeof snapshot.description === "string" ? snapshot.description.trim() : "";
+  if (description) next.description = description;
+
+  const startDate = typeof snapshot.startDate === "string" ? snapshot.startDate.trim() : "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(startDate)) next.startDate = startDate;
+
+  const endDate = typeof snapshot.endDate === "string" ? snapshot.endDate.trim() : "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(endDate)) next.endDate = endDate;
+
+  if (Array.isArray(snapshot.details) && snapshot.details.length > 0) {
+    const details = snapshot.details
+      .map((item) => ({
+        label: typeof item?.label === "string" ? item.label.trim() : "",
+        value: typeof item?.value === "string" ? item.value.trim() : "",
+      }))
+      .filter((item) => item.label.length > 0 && item.value.length > 0);
+    if (details.length > 0) {
+      next.details = details;
+    }
+  }
+
+  return next;
 };
 
 const RESEARCH_STATUS_LABEL: Record<GenerationResearchReport["status"], string> = {
@@ -455,6 +548,8 @@ const KST_TIMEZONE = "Asia/Seoul";
 const PLAN_STYLE_OPTIONS = ["카드뉴스", "홍보물", "정보전달", "감성에세이"];
 const PLAN_TARGET_OPTIONS = ["1020 MZ세대", "3040 직장인", "학부모", "예비 신혼부부"];
 const PLAN_ASPECT_RATIOS = ["1:1", "4:5", "16:9", "9:16", "3:4"];
+const RESEARCH_TIMEOUT_MS = 6_500;
+const SUGGEST_ANGLES_TIMEOUT_MS = 10_000;
 
 const getKstTodayDateText = () =>
   new Intl.DateTimeFormat("en-CA", {
@@ -595,6 +690,11 @@ export default function InstagramAiPage() {
   const [planSlideCount, setPlanSlideCount] = useState(6);
   const [generatedPlanSlides, setGeneratedPlanSlides] = useState<Slide[]>([]);
   const [generatedPlanSlidesDirty, setGeneratedPlanSlidesDirty] = useState(false);
+  const [suggestedPlanAngles, setSuggestedPlanAngles] = useState<SuggestedAngle[]>([]);
+  const [selectedPlanAngle, setSelectedPlanAngle] = useState<SuggestedAngle | null>(null);
+  const [showPlanAngleSelector, setShowPlanAngleSelector] = useState(false);
+  const [isLoadingPlanAngles, setIsLoadingPlanAngles] = useState(false);
+  const [pendingPlanGeneration, setPendingPlanGeneration] = useState<PlanGenerationContext | null>(null);
   const [isPlanGenerating, setIsPlanGenerating] = useState(false);
   const [scheduleAt, setScheduleAt] = useState(createDefaultScheduleValue);
   const [isCaptionGenerating, setIsCaptionGenerating] = useState(false);
@@ -652,6 +752,14 @@ export default function InstagramAiPage() {
     },
     [createMode, festivals, fixedFestivalData, selectedFestivalId],
   );
+
+  useEffect(() => {
+    setSuggestedPlanAngles([]);
+    setSelectedPlanAngle(null);
+    setShowPlanAngleSelector(false);
+    setIsLoadingPlanAngles(false);
+    setPendingPlanGeneration(null);
+  }, [selectedFestival?.id]);
 
   const buildAuthHeaders = useCallback(
     async (json = false) => {
@@ -754,12 +862,15 @@ export default function InstagramAiPage() {
 
   const researchFestivalForGeneration = useCallback(async (festival: UnifiedFestival) => {
     const requestStartedAt = new Date().toISOString();
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), RESEARCH_TIMEOUT_MS);
 
     try {
       const updateRes = await fetch("/api/festivals/research", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ festivalIds: [festival.id] }),
+        signal: controller.signal,
       });
 
       const updateData = (await updateRes.json().catch(() => ({}))) as {
@@ -773,7 +884,29 @@ export default function InstagramAiPage() {
 
       const researchResult = Array.isArray(updateData.results) ? updateData.results[0] : null;
       if (researchResult?.status === "error") {
-        throw new Error(researchResult.message || "행사 자료 조사 중 오류가 발생했습니다.");
+        const rawMessage = researchResult.message || "행사 자료 조사 중 오류가 발생했습니다.";
+        if (isAiQuotaErrorMessage(rawMessage)) {
+          const notice = "AI 조사 호출 한도에 도달해 기존 행사 정보로 생성합니다.";
+          setLatestResearchReport({
+            festivalId: festival.id,
+            festivalTitle: festival.title,
+            status: "unchanged",
+            searchedAt: researchResult.searchedAt || requestStartedAt,
+            updatedFields: [],
+            researched: null,
+            message: notice,
+          });
+          setIsResearchReportOpen(true);
+          setStickyErrorMessage(notice);
+          registerFailureEvent({
+            kind: "generation",
+            stage: "행사 자료 조사",
+            message: notice,
+            festivalTitle: festival.title,
+          });
+          return festival;
+        }
+        throw new Error(rawMessage);
       }
 
       if (researchResult?.status === "no-match" || researchResult?.status === "not-found") {
@@ -798,9 +931,7 @@ export default function InstagramAiPage() {
         return festival;
       }
 
-      const refreshedPayload = await fetchFestivalsFromApi({ refresh: true, refreshMode: "replace" });
-      const refreshedFestival = refreshedPayload.festivals.find((item) => item.id === festival.id) ?? null;
-      const mergedFestival = mergeFestivalForGeneration(festival, refreshedFestival);
+      const mergedFestival = mergeFestivalResearchSnapshot(festival, researchResult?.researched || null);
       const nextStatus = researchResult?.status === "updated" ? "updated" : "unchanged";
       const nextMessage = researchResult?.message
         || (nextStatus === "updated"
@@ -818,7 +949,41 @@ export default function InstagramAiPage() {
       setIsResearchReportOpen(true);
       return mergedFestival;
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        setLatestResearchReport({
+          festivalId: festival.id,
+          festivalTitle: festival.title,
+          status: "unchanged",
+          searchedAt: requestStartedAt,
+          updatedFields: [],
+          researched: null,
+          message: "조사 시간이 길어 기존 행사 정보로 바로 생성합니다.",
+        });
+        setIsResearchReportOpen(true);
+        return festival;
+      }
       const message = error instanceof Error ? error.message : "행사 자료 조사 중 오류가 발생했습니다.";
+      if (isAiQuotaErrorMessage(message)) {
+        const notice = "AI 조사 호출 한도에 도달해 기존 행사 정보로 생성합니다.";
+        setLatestResearchReport({
+          festivalId: festival.id,
+          festivalTitle: festival.title,
+          status: "unchanged",
+          searchedAt: requestStartedAt,
+          updatedFields: [],
+          researched: null,
+          message: notice,
+        });
+        setIsResearchReportOpen(true);
+        setStickyErrorMessage(notice);
+        registerFailureEvent({
+          kind: "generation",
+          stage: "행사 자료 조사",
+          message: notice,
+          festivalTitle: festival.title,
+        });
+        return festival;
+      }
       setLatestResearchReport({
         festivalId: festival.id,
         festivalTitle: festival.title,
@@ -837,6 +1002,8 @@ export default function InstagramAiPage() {
         festivalTitle: festival.title,
       });
       return festival;
+    } finally {
+      clearTimeout(timeoutId);
     }
   }, [registerFailureEvent]);
 
@@ -1225,48 +1392,43 @@ export default function InstagramAiPage() {
     }
   }, [captionStyle, captionTone, registerFailureEvent, selectedFestival]);
 
-  const handleGeneratePlanAndCaption = useCallback(async () => {
-    if (!user) {
-      window.location.href = "/login";
-      return;
-    }
-    if (!selectedFestival) {
-      const nextMessage = "기획안을 생성할 행사 정보를 찾지 못했습니다.";
-      setErrorMessage(nextMessage);
-      registerFailureEvent({
-        kind: "generation",
-        stage: "기획안+캡션 생성",
-        message: nextMessage,
-      });
-      return;
-    }
-
+  const executePlanGeneration = useCallback(async (
+    context: PlanGenerationContext,
+    angleSelection: SuggestedAngle | null,
+  ) => {
     setIsPlanGenerating(true);
     setErrorMessage(null);
-    setFeedbackMessage(null);
-    setLatestResearchReport(null);
 
     try {
-      setFeedbackMessage("선택한 행사 자료를 조사하고 있습니다...");
-      const festivalForGeneration = await researchFestivalForGeneration(selectedFestival);
-      const content = buildFestivalPlanContent(festivalForGeneration);
-      if (!content.trim()) {
-        throw new Error("행사 본문 정보가 부족해서 기획안을 생성할 수 없습니다.");
-      }
-
       const headers = await buildAuthHeaders(true);
+      const angleHints = buildAngleHintsContent(suggestedPlanAngles);
+      const selectedAngleBlock = angleSelection
+        ? `[선택 앵글]\n- type: ${angleSelection.type}\n- label: ${angleSelection.label}\n- hook: ${angleSelection.hook}\n- description: ${angleSelection.description}`
+        : "";
+      const contentWithAngleHints = [
+        context.content,
+        angleHints || null,
+        selectedAngleBlock || null,
+      ].filter(Boolean).join("\n\n");
+
+      setFeedbackMessage("기획안과 캡션을 생성하고 있습니다...");
       const res = await fetch("/api/generate-slides", {
         method: "POST",
         headers,
         body: JSON.stringify({
-          content,
+          content: contentWithAngleHints,
+          angleHints: suggestedPlanAngles,
+          ...(angleSelection ? {
+            angle: angleSelection.type,
+            angleHook: angleSelection.hook,
+          } : {}),
           style: planStyle,
           target: planTarget,
           aspectRatio: planAspectRatio,
-          genre: festivalForGeneration.genre,
-          source: festivalForGeneration.source,
-          sourceLabel: festivalForGeneration.sourceLabel || festivalForGeneration.source,
-          imageUrl: festivalForGeneration.imageUrl,
+          genre: context.festival.genre,
+          source: context.festival.source,
+          sourceLabel: context.festival.sourceLabel || context.festival.source,
+          imageUrl: context.festival.imageUrl,
           slideCount: planSlideCount,
           tone: captionTone,
           captionStyle,
@@ -1295,12 +1457,12 @@ export default function InstagramAiPage() {
             : (typeof slide.content === "string" ? slide.content : "");
           const image = typeof slide.image === "string" && slide.image.trim()
             ? slide.image
-            : (index === 0 ? festivalForGeneration.imageUrl : undefined);
+            : (index === 0 ? context.festival.imageUrl : undefined);
           const renderedImageUrl = typeof slide.renderedImageUrl === "string" && slide.renderedImageUrl.trim()
             ? slide.renderedImageUrl.trim()
             : undefined;
           return {
-            id: `${festivalForGeneration.id}-${index + 1}`,
+            id: `${context.festival.id}-${index + 1}`,
             title,
             body,
             image,
@@ -1328,11 +1490,14 @@ export default function InstagramAiPage() {
           kind: "generation",
           stage: "기획안 생성 보정",
           message: summary,
-          festivalTitle: festivalForGeneration.title,
+          festivalTitle: context.festival.title,
         });
         setStickyErrorMessage(`AI 보정 이슈: ${summary}`);
       }
-      setFeedbackMessage("행사 자료 조사 후 기획안과 캡션을 생성했습니다.");
+
+      setFeedbackMessage("기획안과 캡션을 생성했습니다.");
+      setShowPlanAngleSelector(false);
+      setPendingPlanGeneration(null);
     } catch (error) {
       console.error(error);
       const nextMessage = error instanceof Error ? error.message : "기획안 생성에 실패했습니다.";
@@ -1341,7 +1506,7 @@ export default function InstagramAiPage() {
         kind: "generation",
         stage: "기획안+캡션 생성",
         message: nextMessage,
-        festivalTitle: selectedFestival?.title || null,
+        festivalTitle: context.festival.title,
       });
     } finally {
       setIsPlanGenerating(false);
@@ -1355,10 +1520,127 @@ export default function InstagramAiPage() {
     planStyle,
     planTarget,
     registerFailureEvent,
+    suggestedPlanAngles,
+  ]);
+
+  const handleGeneratePlanAndCaption = useCallback(async () => {
+    if (!user) {
+      window.location.href = "/login";
+      return;
+    }
+    if (!selectedFestival) {
+      const nextMessage = "기획안을 생성할 행사 정보를 찾지 못했습니다.";
+      setErrorMessage(nextMessage);
+      registerFailureEvent({
+        kind: "generation",
+        stage: "기획안+캡션 생성",
+        message: nextMessage,
+      });
+      return;
+    }
+
+    setIsPlanGenerating(true);
+    setIsLoadingPlanAngles(true);
+    setErrorMessage(null);
+    setFeedbackMessage(null);
+    setLatestResearchReport(null);
+    setSuggestedPlanAngles([]);
+    setSelectedPlanAngle(null);
+    setShowPlanAngleSelector(true);
+    setPendingPlanGeneration(null);
+
+    try {
+      setFeedbackMessage("선택한 행사 자료를 조사하고 있습니다...");
+      const festivalForGeneration = await researchFestivalForGeneration(selectedFestival);
+      const content = buildFestivalPlanContent(festivalForGeneration);
+      if (!content.trim()) {
+        throw new Error("행사 본문 정보가 부족해서 기획안을 생성할 수 없습니다.");
+      }
+
+      setPendingPlanGeneration({
+        festival: festivalForGeneration,
+        content,
+      });
+
+      const headers = await buildAuthHeaders(true);
+      setFeedbackMessage("콘텐츠 앵글을 생성하고 있습니다...");
+
+      let nextAngles: SuggestedAngle[] = [];
+      const suggestAnglesController = new AbortController();
+      const suggestAnglesTimeoutId = setTimeout(() => suggestAnglesController.abort(), SUGGEST_ANGLES_TIMEOUT_MS);
+      try {
+        const suggestAnglesRes = await fetch("/api/suggest-angles", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ content }),
+          signal: suggestAnglesController.signal,
+        });
+        const suggestAnglesData = (await suggestAnglesRes.json().catch(() => ({}))) as SuggestAnglesResponse;
+        if (!suggestAnglesRes.ok) {
+          setSuggestedPlanAngles([
+            { type: "VIBE", label: "감성/분위기", hook: "이번 시즌 꼭 가야 할 이유", description: "분위기와 경험을 중심으로 한 앵글" },
+            { type: "LINEUP", label: "라인업", hook: "이 라인업 보고도 안 가면 후회", description: "아티스트 기대감을 자극하는 앵글" },
+            { type: "SCARCITY", label: "희소성", hook: "딱 이번뿐, 놓치면 1년 기다려야 해", description: "희소성으로 클릭을 유도하는 앵글" },
+          ]);
+          setFeedbackMessage("추천 앵글을 선택한 뒤 생성을 진행하세요.");
+          return;
+        }
+        nextAngles = normalizeSuggestedAngles(suggestAnglesData.angles);
+      } catch (suggestAnglesError) {
+        console.warn("Failed to load suggested angles:", suggestAnglesError);
+      } finally {
+        clearTimeout(suggestAnglesTimeoutId);
+      }
+
+      setSuggestedPlanAngles(nextAngles);
+      if (nextAngles.length > 0) {
+        setFeedbackMessage("추천 앵글을 선택한 뒤 생성을 진행하세요.");
+      } else {
+        setFeedbackMessage("추천 앵글이 없어도 'AI한테 맡기기'로 생성할 수 있습니다.");
+      }
+    } catch (error) {
+      console.error(error);
+      const nextMessage = error instanceof Error ? error.message : "기획안 생성에 실패했습니다.";
+      setErrorMessage(nextMessage);
+      registerFailureEvent({
+        kind: "generation",
+        stage: "기획안+캡션 생성",
+        message: nextMessage,
+        festivalTitle: selectedFestival?.title || null,
+      });
+      setShowPlanAngleSelector(false);
+      setPendingPlanGeneration(null);
+    } finally {
+      setIsLoadingPlanAngles(false);
+      setIsPlanGenerating(false);
+    }
+  }, [
+    buildAuthHeaders,
+    registerFailureEvent,
     researchFestivalForGeneration,
     selectedFestival,
     user,
   ]);
+
+  const handleGenerateWithSelectedPlanAngle = useCallback(async () => {
+    if (!selectedPlanAngle) {
+      setShowPlanAngleSelector(true);
+      return;
+    }
+    if (!pendingPlanGeneration) {
+      setErrorMessage("먼저 기획안+캡션 생성하기를 눌러 앵글을 추천받아 주세요.");
+      return;
+    }
+    await executePlanGeneration(pendingPlanGeneration, selectedPlanAngle);
+  }, [executePlanGeneration, pendingPlanGeneration, selectedPlanAngle]);
+
+  const handleGeneratePlanWithoutAngle = useCallback(async () => {
+    if (!pendingPlanGeneration) {
+      setErrorMessage("먼저 기획안+캡션 생성하기를 눌러 앵글을 추천받아 주세요.");
+      return;
+    }
+    await executePlanGeneration(pendingPlanGeneration, null);
+  }, [executePlanGeneration, pendingPlanGeneration]);
 
   const updateGeneratedPlanSlide = useCallback(
     (index: number, field: "title" | "body", value: string) => {
@@ -1673,6 +1955,24 @@ export default function InstagramAiPage() {
       window.removeEventListener(META_ACTIVE_ACCOUNT_CHANGED_EVENT, handleActiveAccountChanged);
     };
   }, [fetchQueue, refreshConnectionPreview]);
+
+  useEffect(() => {
+    if (authLoading || !user) return;
+
+    const runAutoDispatch = async () => {
+      await dispatchScheduledPosts();
+      await fetchQueue();
+    };
+
+    void runAutoDispatch();
+    const intervalId = window.setInterval(() => {
+      void runAutoDispatch();
+    }, 60_000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [authLoading, dispatchScheduledPosts, fetchQueue, user]);
 
   const scheduledPreviewLabel = useMemo(() => {
     if (!scheduleAt) return "-";
@@ -2502,6 +2802,82 @@ export default function InstagramAiPage() {
                       )}
                     </div>
                   )}
+                </div>
+              )}
+
+              {createMode && showPlanAngleSelector && (
+                <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-4">
+                  <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">추천 앵글 선택</div>
+                  <div className="mt-1 text-xs font-bold text-slate-500">
+                    원하는 앵글을 고르거나, AI 자동 생성으로 바로 진행할 수 있습니다.
+                  </div>
+
+                  {isLoadingPlanAngles ? (
+                    <div className="mt-3 grid gap-3 md:grid-cols-3">
+                      {Array.from({ length: 3 }).map((_, index) => (
+                        <div
+                          key={`plan-angle-skeleton-${index}`}
+                          className="rounded-xl border border-slate-200 bg-slate-50 p-3"
+                        >
+                          <div className="h-4 w-20 animate-pulse rounded bg-slate-200" />
+                          <div className="mt-3 h-5 w-full animate-pulse rounded bg-slate-200" />
+                          <div className="mt-2 h-4 w-4/5 animate-pulse rounded bg-slate-200" />
+                        </div>
+                      ))}
+                    </div>
+                  ) : suggestedPlanAngles.length > 0 ? (
+                    <div className="mt-3 grid gap-3 md:grid-cols-3">
+                      {suggestedPlanAngles.map((item) => {
+                        const isSelected = selectedPlanAngle?.type === item.type;
+                        return (
+                          <button
+                            key={`${item.type}-${item.hook}`}
+                            type="button"
+                            onClick={() => setSelectedPlanAngle(item)}
+                            className={cn(
+                              "rounded-xl border px-3 py-3 text-left transition-all",
+                              isSelected
+                                ? "border-pink-500 bg-pink-50 ring-2 ring-pink-200"
+                                : "border-slate-200 bg-white hover:border-slate-300",
+                            )}
+                          >
+                            <div className={cn("text-[11px] font-black", isSelected ? "text-pink-700" : "text-slate-700")}>
+                              {item.label}
+                            </div>
+                            <div className={cn("mt-2 text-sm font-black leading-snug", isSelected ? "text-pink-800" : "text-slate-900")}>
+                              {item.hook}
+                            </div>
+                            <div className="mt-2 text-[11px] font-bold text-slate-500">
+                              {item.description}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-xs font-bold text-amber-700">
+                      추천 앵글을 불러오지 못했습니다. 아래 &quot;AI한테 맡기기&quot;로 계속 진행할 수 있습니다.
+                    </div>
+                  )}
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => { void handleGenerateWithSelectedPlanAngle(); }}
+                      disabled={isPlanGenerating || isLoadingPlanAngles || !selectedPlanAngle}
+                      className="inline-flex items-center justify-center rounded-xl bg-pink-600 px-4 py-2 text-xs font-black text-white transition-all hover:bg-pink-700 disabled:bg-pink-300"
+                    >
+                      이 앵글로 생성하기
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { void handleGeneratePlanWithoutAngle(); }}
+                      disabled={isPlanGenerating || isLoadingPlanAngles}
+                      className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-black text-slate-700 transition-all hover:bg-slate-50 disabled:opacity-60"
+                    >
+                      AI한테 맡기기
+                    </button>
+                  </div>
                 </div>
               )}
 

@@ -331,6 +331,36 @@ export default function SchedulePage() {
     };
   }, [currentDate, fetchQueue, fetchSelectedDatePosts, selectedDate, selectedPostsFetched, user]);
 
+  useEffect(() => {
+    if (authLoading || !user) return;
+
+    const runAutoDispatch = async () => {
+      await dispatchScheduledPosts(true);
+      await fetchQueue(currentDate);
+      if (selectedPostsFetched) {
+        await fetchSelectedDatePosts(selectedDate);
+      }
+    };
+
+    void runAutoDispatch();
+    const intervalId = window.setInterval(() => {
+      void runAutoDispatch();
+    }, 60_000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [
+    authLoading,
+    currentDate,
+    dispatchScheduledPosts,
+    fetchQueue,
+    fetchSelectedDatePosts,
+    selectedDate,
+    selectedPostsFetched,
+    user,
+  ]);
+
   const monthCells = useMemo(() => {
     const firstDay = startOfMonth(currentDate);
     const lastDay = endOfMonth(currentDate);
