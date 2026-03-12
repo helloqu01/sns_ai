@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { usePathname, useSearchParams } from "next/navigation";
 import {
   CalendarClock,
   CheckCircle2,
@@ -184,6 +185,11 @@ type GenerationResearchReport = {
 };
 
 const MAX_LOCAL_FAILURE_EVENTS = 40;
+const FALLBACK_PLAN_ANGLES: SuggestedAngle[] = [
+  { type: "VIBE", label: "감성/분위기", hook: "이번 시즌 꼭 가야 할 이유", description: "분위기와 경험을 중심으로 한 앵글" },
+  { type: "LINEUP", label: "라인업", hook: "이 라인업 보고도 안 가면 후회", description: "아티스트 기대감을 자극하는 앵글" },
+  { type: "SCARCITY", label: "희소성", hook: "딱 이번뿐, 놓치면 1년 기다려야 해", description: "희소성으로 클릭을 유도하는 앵글" },
+];
 const normalizeSuggestedAngles = (value: unknown): SuggestedAngle[] => {
   if (!Array.isArray(value)) return [] as SuggestedAngle[];
 
@@ -545,11 +551,15 @@ const statusToneMap: Record<InstagramPublishingRecord["status"], string> = {
 
 const QUEUE_PAGE_SIZE = 5;
 const KST_TIMEZONE = "Asia/Seoul";
-const PLAN_STYLE_OPTIONS = ["카드뉴스", "홍보물", "정보전달", "감성에세이"];
+const PLAN_STYLE_OPTIONS = ["희소성", "라인업", "감성/분위기", "실용/꿀팁", "가성비", "트렌드", "동행/공유", "스토리"];
 const PLAN_TARGET_OPTIONS = ["1020 MZ세대", "3040 직장인", "학부모", "예비 신혼부부"];
 const PLAN_ASPECT_RATIOS = ["1:1", "4:5", "16:9", "9:16", "3:4"];
 const RESEARCH_TIMEOUT_MS = 6_500;
 const SUGGEST_ANGLES_TIMEOUT_MS = 10_000;
+const PLAN_ANGLE_CACHE_TTL_MS = 10 * 60 * 1000;
+
+const buildPlanAngleCacheKey = (content: string) =>
+  content.replace(/\s+/g, " ").trim().slice(0, 1200).toLowerCase();
 
 const getKstTodayDateText = () =>
   new Intl.DateTimeFormat("en-CA", {
@@ -627,31 +637,27 @@ const normalizeQueueCounts = (value: unknown): QueueCounts => {
 
 export default function InstagramAiPage() {
   const { user, loading: authLoading } = useAuth();
-  const createModeRef = useRef<boolean>(
-    typeof window !== "undefined" ? window.location.pathname === "/create" : false,
-  );
-  const fixedFestivalQueryRef = useRef<FixedFestivalInput | null>(
-    (() => {
-      if (typeof window === "undefined" || window.location.pathname !== "/create") return null;
-      const params = new URLSearchParams(window.location.search);
-      return {
-        id: params.get("festivalId"),
-        title: params.get("title"),
-        location: params.get("location"),
-        startDate: params.get("start"),
-        endDate: params.get("end"),
-        genre: params.get("genre"),
-        source: params.get("source"),
-        sourceLabel: params.get("sourceLabel"),
-        sourceUrl: params.get("sourceUrl"),
-        imageUrl: params.get("imageUrl"),
-      };
-    })(),
-  );
-  const createMode = createModeRef.current;
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const normalizedPathname = useMemo(() => {
+    const trimmed = (pathname || "").replace(/\/+$/, "");
+    return trimmed || "/";
+  }, [pathname]);
+  const isAutoPlanRequest = searchParams.get("autoplan") === "1" || normalizedPathname === "/create";
   const fixedFestivalData = useMemo(
-    () => (createMode ? toFixedFestival(fixedFestivalQueryRef.current) : null),
-    [createMode],
+    () => toFixedFestival({
+      id: searchParams.get("festivalId"),
+      title: searchParams.get("title"),
+      location: searchParams.get("location"),
+      startDate: searchParams.get("start"),
+      endDate: searchParams.get("end"),
+      genre: searchParams.get("genre"),
+      source: searchParams.get("source"),
+      sourceLabel: searchParams.get("sourceLabel"),
+      sourceUrl: searchParams.get("sourceUrl"),
+      imageUrl: searchParams.get("imageUrl"),
+    }),
+    [searchParams],
   );
   const preferredFestivalIdRef = useRef<string | null>(
     typeof window !== "undefined"
@@ -697,7 +703,6 @@ export default function InstagramAiPage() {
   const [pendingPlanGeneration, setPendingPlanGeneration] = useState<PlanGenerationContext | null>(null);
   const [isPlanGenerating, setIsPlanGenerating] = useState(false);
   const [scheduleAt, setScheduleAt] = useState(createDefaultScheduleValue);
-  const [isCaptionGenerating, setIsCaptionGenerating] = useState(false);
   const [isPublishingNow, setIsPublishingNow] = useState(false);
   const [isScheduling, setIsScheduling] = useState(false);
   const [queue, setQueue] = useState<InstagramPublishingRecord[]>([]);
@@ -742,15 +747,17 @@ export default function InstagramAiPage() {
   const [selectedSavedCardnewsId, setSelectedSavedCardnewsId] = useState<string | null>(null);
   const initializedUserRef = useRef<string | null>(null);
   const failureCardRef = useRef<HTMLElement | null>(null);
+  const planAngleCacheRef = useRef<Map<string, { angles: SuggestedAngle[]; expiresAt: number }>>(new Map());
+  const autoPlanTriggeredRef = useRef(false);
 
   const selectedFestival = useMemo(
     () => {
-      if (createMode && fixedFestivalData) {
-        return fixedFestivalData;
-      }
-      return festivals.find((festival) => festival.id === selectedFestivalId) ?? null;
+      const matched = festivals.find((festival) => festival.id === selectedFestivalId);
+      if (matched) return matched;
+      if (fixedFestivalData) return fixedFestivalData;
+      return null;
     },
-    [createMode, festivals, fixedFestivalData, selectedFestivalId],
+    [festivals, fixedFestivalData, selectedFestivalId],
   );
 
   useEffect(() => {
@@ -805,13 +812,6 @@ export default function InstagramAiPage() {
   }, []);
 
   const fetchFestivals = useCallback(async () => {
-    if (createMode && fixedFestivalData) {
-      setFestivals([fixedFestivalData]);
-      setSelectedFestivalId(fixedFestivalData.id);
-      setFestivalsLoading(false);
-      return;
-    }
-
     setFestivalsLoading(true);
     try {
       const { festivals: items } = await fetchFestivalsFromApi();
@@ -821,11 +821,14 @@ export default function InstagramAiPage() {
         if (!endDate) return true;
         return endDate >= todayText;
       });
+      const mergedFestivals = fixedFestivalData
+        ? [fixedFestivalData, ...upcomingOnly.filter((festival) => festival.id !== fixedFestivalData.id)]
+        : upcomingOnly;
 
-      setFestivals(upcomingOnly);
+      setFestivals(mergedFestivals);
       setSelectedFestivalId((prev) => {
         const preferredFestivalId = preferredFestivalIdRef.current;
-        if (preferredFestivalId && upcomingOnly.some((festival) => festival.id === preferredFestivalId)) {
+        if (preferredFestivalId && mergedFestivals.some((festival) => festival.id === preferredFestivalId)) {
           preferredFestivalIdRef.current = null;
           preferredFestivalMetaRef.current = null;
           return preferredFestivalId;
@@ -834,7 +837,7 @@ export default function InstagramAiPage() {
         const preferredMeta = preferredFestivalMetaRef.current;
         if (preferredMeta) {
           const normalize = (value: string) => value.trim().replace(/\s+/g, " ");
-          const matched = upcomingOnly.find((festival) => {
+          const matched = mergedFestivals.find((festival) => {
             const titleMatched = normalize(festival.title) === normalize(preferredMeta.title);
             const startMatched = normalizeDateText(festival.startDate) === normalizeDateText(preferredMeta.start);
             const endMatched = normalizeDateText(festival.endDate) === normalizeDateText(preferredMeta.end);
@@ -848,17 +851,17 @@ export default function InstagramAiPage() {
           }
         }
 
-        if (prev && upcomingOnly.some((festival) => festival.id === prev)) {
+        if (prev && mergedFestivals.some((festival) => festival.id === prev)) {
           return prev;
         }
-        return upcomingOnly[0]?.id || "";
+        return mergedFestivals[0]?.id || "";
       });
     } catch (error) {
       console.error(error);
     } finally {
       setFestivalsLoading(false);
     }
-  }, [createMode, fixedFestivalData]);
+  }, [fixedFestivalData]);
 
   const researchFestivalForGeneration = useCallback(async (festival: UnifiedFestival) => {
     const requestStartedAt = new Date().toISOString();
@@ -1345,53 +1348,6 @@ export default function InstagramAiPage() {
     await Promise.all([fetchFestivals(), fetchQueue(), refreshConnectionPreview()]);
   }, [dispatchScheduledPosts, fetchFestivals, fetchQueue, refreshConnectionPreview]);
 
-  const handleGenerateCaption = useCallback(async () => {
-    if (!selectedFestival) {
-      const nextMessage = "캡션을 만들 행사 데이터를 먼저 선택해주세요.";
-      setErrorMessage(nextMessage);
-      registerFailureEvent({
-        kind: "generation",
-        stage: "AI 캡션 생성",
-        message: nextMessage,
-      });
-      return;
-    }
-
-    setIsCaptionGenerating(true);
-    setErrorMessage(null);
-    setFeedbackMessage(null);
-
-    try {
-      const res = await fetch("/api/generate-caption", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          festivals: [selectedFestival],
-          tone: captionTone,
-          captionStyle,
-        }),
-      });
-      const data = (await res.json().catch(() => ({}))) as { caption?: string; error?: string };
-      if (!res.ok || !data.caption) {
-        throw new Error(data.error || "AI 캡션 생성에 실패했습니다.");
-      }
-      setCaptionText(data.caption);
-      setFeedbackMessage("AI 캡션을 생성했습니다.");
-    } catch (error) {
-      console.error(error);
-      const nextMessage = error instanceof Error ? error.message : "AI 캡션 생성에 실패했습니다.";
-      setErrorMessage(nextMessage);
-      registerFailureEvent({
-        kind: "generation",
-        stage: "AI 캡션 생성",
-        message: nextMessage,
-        festivalTitle: selectedFestival?.title || null,
-      });
-    } finally {
-      setIsCaptionGenerating(false);
-    }
-  }, [captionStyle, captionTone, registerFailureEvent, selectedFestival]);
-
   const executePlanGeneration = useCallback(async (
     context: PlanGenerationContext,
     angleSelection: SuggestedAngle | null,
@@ -1418,12 +1374,8 @@ export default function InstagramAiPage() {
         body: JSON.stringify({
           content: contentWithAngleHints,
           angleHints: suggestedPlanAngles,
-          ...(angleSelection ? {
-            angle: angleSelection.type,
-            angleHook: angleSelection.hook,
-          } : {}),
-          angle: selectedPlanAngle?.type ?? null,
-          angleHook: selectedPlanAngle?.hook ?? null,
+          angle: angleSelection?.type ?? null,
+          angleHook: angleSelection?.hook ?? null,
           style: planStyle,
           target: planTarget,
           aspectRatio: planAspectRatio,
@@ -1497,9 +1449,8 @@ export default function InstagramAiPage() {
         setStickyErrorMessage(`AI 보정 이슈: ${summary}`);
       }
 
-      setFeedbackMessage("기획안과 캡션을 생성했습니다.");
-      setShowPlanAngleSelector(false);
-      setPendingPlanGeneration(null);
+      setFeedbackMessage("기획안과 캡션을 생성했습니다. 다른 앵글을 선택해 다시 생성할 수 있습니다.");
+      setShowPlanAngleSelector(true);
     } catch (error) {
       console.error(error);
       const nextMessage = error instanceof Error ? error.message : "기획안 생성에 실패했습니다.";
@@ -1522,11 +1473,13 @@ export default function InstagramAiPage() {
     planStyle,
     planTarget,
     registerFailureEvent,
-    selectedPlanAngle,
     suggestedPlanAngles,
   ]);
 
   const handleGeneratePlanAndCaption = useCallback(async () => {
+    if (isPlanGenerating || isLoadingPlanAngles) {
+      return;
+    }
     if (!user) {
       window.location.href = "/login";
       return;
@@ -1565,6 +1518,17 @@ export default function InstagramAiPage() {
         content,
       });
 
+      const angleCacheKey = buildPlanAngleCacheKey(content);
+      const cachedAngles = planAngleCacheRef.current.get(angleCacheKey);
+      if (cachedAngles && cachedAngles.expiresAt > Date.now()) {
+        setSuggestedPlanAngles(cachedAngles.angles);
+        setFeedbackMessage("추천 앵글을 선택한 뒤 생성을 진행하세요.");
+        return;
+      }
+      if (cachedAngles) {
+        planAngleCacheRef.current.delete(angleCacheKey);
+      }
+
       const headers = await buildAuthHeaders(true);
       setFeedbackMessage("콘텐츠 앵글을 생성하고 있습니다...");
 
@@ -1580,27 +1544,26 @@ export default function InstagramAiPage() {
         });
         const suggestAnglesData = (await suggestAnglesRes.json().catch(() => ({}))) as SuggestAnglesResponse;
         if (!suggestAnglesRes.ok) {
-          setSuggestedPlanAngles([
-            { type: "VIBE", label: "감성/분위기", hook: "이번 시즌 꼭 가야 할 이유", description: "분위기와 경험을 중심으로 한 앵글" },
-            { type: "LINEUP", label: "라인업", hook: "이 라인업 보고도 안 가면 후회", description: "아티스트 기대감을 자극하는 앵글" },
-            { type: "SCARCITY", label: "희소성", hook: "딱 이번뿐, 놓치면 1년 기다려야 해", description: "희소성으로 클릭을 유도하는 앵글" },
-          ]);
-          setFeedbackMessage("추천 앵글을 선택한 뒤 생성을 진행하세요.");
-          return;
+          nextAngles = FALLBACK_PLAN_ANGLES;
+        } else {
+          nextAngles = normalizeSuggestedAngles(suggestAnglesData.angles);
         }
-        nextAngles = normalizeSuggestedAngles(suggestAnglesData.angles);
       } catch (suggestAnglesError) {
         console.warn("Failed to load suggested angles:", suggestAnglesError);
+        nextAngles = FALLBACK_PLAN_ANGLES;
       } finally {
         clearTimeout(suggestAnglesTimeoutId);
       }
 
-      setSuggestedPlanAngles(nextAngles);
-      if (nextAngles.length > 0) {
-        setFeedbackMessage("추천 앵글을 선택한 뒤 생성을 진행하세요.");
-      } else {
-        setFeedbackMessage("추천 앵글이 없어도 'AI한테 맡기기'로 생성할 수 있습니다.");
+      if (nextAngles.length === 0) {
+        nextAngles = FALLBACK_PLAN_ANGLES;
       }
+      planAngleCacheRef.current.set(angleCacheKey, {
+        angles: nextAngles,
+        expiresAt: Date.now() + PLAN_ANGLE_CACHE_TTL_MS,
+      });
+      setSuggestedPlanAngles(nextAngles);
+      setFeedbackMessage("추천 앵글을 선택한 뒤 생성을 진행하세요.");
     } catch (error) {
       console.error(error);
       const nextMessage = error instanceof Error ? error.message : "기획안 생성에 실패했습니다.";
@@ -1619,11 +1582,27 @@ export default function InstagramAiPage() {
     }
   }, [
     buildAuthHeaders,
+    isLoadingPlanAngles,
+    isPlanGenerating,
     registerFailureEvent,
     researchFestivalForGeneration,
     selectedFestival,
     user,
   ]);
+
+  useEffect(() => {
+    if (!isAutoPlanRequest) {
+      autoPlanTriggeredRef.current = false;
+      return;
+    }
+    if (autoPlanTriggeredRef.current) return;
+    if (authLoading) return;
+    if (!user) return;
+    if (!selectedFestival) return;
+
+    autoPlanTriggeredRef.current = true;
+    void handleGeneratePlanAndCaption();
+  }, [authLoading, handleGeneratePlanAndCaption, isAutoPlanRequest, selectedFestival, user]);
 
   const handleGenerateWithSelectedPlanAngle = useCallback(async () => {
     if (!selectedPlanAngle) {
@@ -1644,6 +1623,99 @@ export default function InstagramAiPage() {
     }
     await executePlanGeneration(pendingPlanGeneration, null);
   }, [executePlanGeneration, pendingPlanGeneration]);
+
+  const angleSelectorPanel = useMemo(() => {
+    if (!showPlanAngleSelector) {
+      return (
+        <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-[11px] font-bold text-slate-500">
+          기획안+캡션 생성하기를 누르면, 행사 성격에 맞는 추천 앵글 3개를 보여드립니다.
+        </div>
+      );
+    }
+
+    if (isLoadingPlanAngles) {
+      return (
+        <div className="grid gap-2">
+          {Array.from({ length: 3 }).map((_, index) => (
+            <div
+              key={`plan-angle-inline-skeleton-${index}`}
+              className="rounded-xl border border-slate-200 bg-slate-50 p-3"
+            >
+              <div className="h-4 w-20 animate-pulse rounded bg-slate-200" />
+              <div className="mt-2 h-4 w-full animate-pulse rounded bg-slate-200" />
+              <div className="mt-2 h-3 w-4/5 animate-pulse rounded bg-slate-200" />
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-2">
+        {suggestedPlanAngles.length > 0 ? (
+          <div className="grid gap-2">
+            {suggestedPlanAngles.map((item) => {
+              const isSelected = selectedPlanAngle?.type === item.type;
+              return (
+                <button
+                  key={`${item.type}-${item.hook}`}
+                  type="button"
+                  onClick={() => setSelectedPlanAngle(item)}
+                  className={cn(
+                    "rounded-xl border px-3 py-3 text-left transition-all",
+                    isSelected
+                      ? "border-pink-500 bg-pink-50 ring-2 ring-pink-200"
+                      : "border-slate-200 bg-white hover:border-slate-300",
+                  )}
+                >
+                  <div className={cn("text-[11px] font-black", isSelected ? "text-pink-700" : "text-slate-700")}>
+                    {item.label}
+                  </div>
+                  <div className={cn("mt-1 text-sm font-black leading-snug", isSelected ? "text-pink-800" : "text-slate-900")}>
+                    {item.hook}
+                  </div>
+                  <div className="mt-1 text-[11px] font-bold text-slate-500">
+                    {item.description}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-[11px] font-bold text-amber-700">
+            추천 앵글을 불러오지 못했습니다. AI한테 맡기기로 계속 진행할 수 있습니다.
+          </div>
+        )}
+
+        <div className="flex flex-wrap gap-2 pt-1">
+          <button
+            type="button"
+            onClick={() => { void handleGenerateWithSelectedPlanAngle(); }}
+            disabled={isPlanGenerating || isLoadingPlanAngles || !selectedPlanAngle}
+            className="inline-flex items-center justify-center rounded-xl bg-pink-600 px-3 py-2 text-[11px] font-black text-white transition-all hover:bg-pink-700 disabled:bg-pink-300"
+          >
+            이 앵글로 생성하기
+          </button>
+          <button
+            type="button"
+            onClick={() => { void handleGeneratePlanWithoutAngle(); }}
+            disabled={isPlanGenerating || isLoadingPlanAngles}
+            className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] font-black text-slate-700 transition-all hover:bg-slate-50 disabled:opacity-60"
+          >
+            AI한테 맡기기
+          </button>
+        </div>
+      </div>
+    );
+  }, [
+    handleGeneratePlanWithoutAngle,
+    handleGenerateWithSelectedPlanAngle,
+    isLoadingPlanAngles,
+    isPlanGenerating,
+    selectedPlanAngle,
+    showPlanAngleSelector,
+    suggestedPlanAngles,
+  ]);
 
   const updateGeneratedPlanSlide = useCallback(
     (index: number, field: "title" | "body", value: string) => {
@@ -1747,10 +1819,7 @@ export default function InstagramAiPage() {
                 if (typeof slide.image === "string" && slide.image.trim().length > 0) {
                   return slide.image.trim();
                 }
-                if (createMode) {
-                  return buildSlideRenderUrl(slide, index) || selectedFestival.imageUrl;
-                }
-                return selectedFestival.imageUrl;
+                return buildSlideRenderUrl(slide, index) || selectedFestival.imageUrl;
               })
               .filter((url): url is string => typeof url === "string" && url.trim().length > 0)
               .slice(0, 10);
@@ -1814,7 +1883,6 @@ export default function InstagramAiPage() {
       buildAuthHeaders,
       buildSlideRenderUrl,
       captionText,
-      createMode,
       generatedPlanSlides,
       isConnected,
       registerFailureEvent,
@@ -2272,36 +2340,34 @@ export default function InstagramAiPage() {
         })}
       </div>
 
-      {!createMode && (
-        <div className="mb-8 flex flex-wrap items-center gap-2">
-          <button
-            onClick={() => setActiveTab("automation")}
-            className={cn(
-              "inline-flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-black transition-all",
-              activeTab === "automation"
-                ? "border-pink-600 bg-pink-600 text-white"
-                : "border-slate-200 bg-white text-slate-600 hover:border-slate-300",
-            )}
-          >
-            <Rocket className="h-4 w-4" />
-            자동 게시
-          </button>
-          <button
-            onClick={() => setActiveTab("studio")}
-            className={cn(
-              "inline-flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-black transition-all",
-              activeTab === "studio"
-                ? "border-slate-900 bg-slate-900 text-white"
-                : "border-slate-200 bg-white text-slate-600 hover:border-slate-300",
-            )}
-          >
-            <LayoutDashboard className="h-4 w-4" />
-            콘텐츠 스튜디오
-          </button>
-        </div>
-      )}
+      <div className="mb-8 flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => setActiveTab("automation")}
+          className={cn(
+            "inline-flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-black transition-all",
+            activeTab === "automation"
+              ? "border-pink-600 bg-pink-600 text-white"
+              : "border-slate-200 bg-white text-slate-600 hover:border-slate-300",
+          )}
+        >
+          <Rocket className="h-4 w-4" />
+          자동 게시
+        </button>
+        <button
+          onClick={() => setActiveTab("studio")}
+          className={cn(
+            "inline-flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-black transition-all",
+            activeTab === "studio"
+              ? "border-slate-900 bg-slate-900 text-white"
+              : "border-slate-200 bg-white text-slate-600 hover:border-slate-300",
+          )}
+        >
+          <LayoutDashboard className="h-4 w-4" />
+          콘텐츠 스튜디오
+        </button>
+      </div>
 
-      {createMode || activeTab === "automation" ? (
+      {activeTab === "automation" ? (
         <div className="grid grid-cols-1 gap-7 xl:grid-cols-[minmax(0,1.08fr)_minmax(360px,0.92fr)]">
           <div className="space-y-6">
             <section className="rounded-[2rem] border border-slate-200 bg-white p-6 shadow-sm">
@@ -2473,32 +2539,26 @@ export default function InstagramAiPage() {
               <div className="mt-6 grid gap-5 xl:grid-cols-[minmax(280px,340px)_minmax(0,1fr)]">
                 <div className="rounded-[1.75rem] border border-slate-100 bg-[linear-gradient(180deg,#fff8fb_0%,#ffffff_100%)] p-5">
                   <label className="mb-2 block text-[10px] font-black uppercase tracking-widest text-slate-400">
-                    {createMode ? "선택 행사" : "행사 선택"}
+                    행사 선택
                   </label>
-                  {createMode ? (
-                    <div className="rounded-2xl border-2 border-slate-100 bg-white px-4 py-3 text-sm font-black text-slate-900">
-                      {selectedFestival?.title || "전달된 행사 정보가 없습니다."}
-                    </div>
-                  ) : (
-                    <select
-                      value={selectedFestivalId}
-                      onChange={(event) => {
-                        setSelectedFestivalId(event.target.value);
-                        setFeedbackMessage(null);
-                        setErrorMessage(null);
-                      }}
-                      className="w-full rounded-2xl border-2 border-slate-100 bg-white px-4 py-3 text-sm font-black text-slate-900 outline-none transition-all focus:border-pink-200"
-                      disabled={festivalsLoading}
-                    >
-                      {festivalsLoading && <option>행사 로딩 중...</option>}
-                      {!festivalsLoading && festivals.length === 0 && <option>표시할 행사가 없습니다.</option>}
-                      {festivals.map((festival) => (
-                        <option key={festival.id} value={festival.id}>
-                          {festival.title}
-                        </option>
-                      ))}
-                    </select>
-                  )}
+                  <select
+                    value={selectedFestivalId}
+                    onChange={(event) => {
+                      setSelectedFestivalId(event.target.value);
+                      setFeedbackMessage(null);
+                      setErrorMessage(null);
+                    }}
+                    className="w-full rounded-2xl border-2 border-slate-100 bg-white px-4 py-3 text-sm font-black text-slate-900 outline-none transition-all focus:border-pink-200"
+                    disabled={festivalsLoading}
+                  >
+                    {festivalsLoading && <option>행사 로딩 중...</option>}
+                    {!festivalsLoading && festivals.length === 0 && <option>표시할 행사가 없습니다.</option>}
+                    {festivals.map((festival) => (
+                      <option key={festival.id} value={festival.id}>
+                        {festival.title}
+                      </option>
+                    ))}
+                  </select>
 
                   <div className="mt-5 overflow-hidden rounded-[1.5rem] border border-slate-100 bg-white">
                     <div className="aspect-[4/5] bg-slate-100">
@@ -2535,78 +2595,76 @@ export default function InstagramAiPage() {
                     </div>
                   </div>
 
-                  {createMode && (
-                    <div className="mt-5 rounded-[1.5rem] border border-slate-100 bg-white p-4">
-                      <div className="mb-3 text-[10px] font-black uppercase tracking-widest text-slate-400">기획안 설정</div>
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <div>
-                          <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-400">뉴스레터 스타일</label>
-                          <select
-                            value={planStyle}
-                            onChange={(event) => setPlanStyle(event.target.value)}
-                            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 outline-none focus:border-pink-300"
-                          >
-                            {PLAN_STYLE_OPTIONS.map((option) => (
-                              <option key={option} value={option}>
-                                {option}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div>
-                          <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-400">타겟 독자</label>
-                          <select
-                            value={planTarget}
-                            onChange={(event) => setPlanTarget(event.target.value)}
-                            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 outline-none focus:border-pink-300"
-                          >
-                            {PLAN_TARGET_OPTIONS.map((option) => (
-                              <option key={option} value={option}>
-                                {option}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      </div>
-
-                      <div className="mt-3">
-                        <label className="mb-2 block text-[10px] font-black uppercase tracking-widest text-slate-400">카드 비율</label>
-                        <div className="grid grid-cols-3 gap-2">
-                          {PLAN_ASPECT_RATIOS.map((ratio) => (
-                            <button
-                              key={ratio}
-                              type="button"
-                              onClick={() => setPlanAspectRatio(ratio)}
-                              className={cn(
-                                "rounded-xl border px-3 py-2 text-[11px] font-black transition-all",
-                                planAspectRatio === ratio
-                                  ? "border-slate-900 bg-slate-900 text-white"
-                                  : "border-slate-200 bg-white text-slate-600 hover:border-slate-300",
-                              )}
-                            >
-                              {ratio}
-                            </button>
+                  <div className="mt-5 rounded-[1.5rem] border border-slate-100 bg-white p-4">
+                    <div className="mb-3 text-[10px] font-black uppercase tracking-widest text-slate-400">기획안 설정</div>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-400">앵글 선택</label>
+                        <select
+                          value={planStyle}
+                          onChange={(event) => setPlanStyle(event.target.value)}
+                          className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 outline-none focus:border-pink-300"
+                        >
+                          {PLAN_STYLE_OPTIONS.map((option) => (
+                            <option key={option} value={option}>
+                              {option}
+                            </option>
                           ))}
-                        </div>
+                        </select>
                       </div>
-
-                      <div className="mt-3">
-                        <div className="mb-2 flex items-center justify-between">
-                          <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">슬라이드 개수</label>
-                          <span className="text-xs font-black text-pink-600">{planSlideCount}장</span>
-                        </div>
-                        <input
-                          type="range"
-                          min="1"
-                          max="10"
-                          step="1"
-                          value={planSlideCount}
-                          onChange={(event) => setPlanSlideCount(Number.parseInt(event.target.value, 10))}
-                          className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-200 accent-[#E91E63]"
-                        />
+                      <div>
+                        <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-400">타겟 독자</label>
+                        <select
+                          value={planTarget}
+                          onChange={(event) => setPlanTarget(event.target.value)}
+                          className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 outline-none focus:border-pink-300"
+                        >
+                          {PLAN_TARGET_OPTIONS.map((option) => (
+                            <option key={option} value={option}>
+                              {option}
+                            </option>
+                          ))}
+                        </select>
                       </div>
                     </div>
-                  )}
+
+                    <div className="mt-3">
+                      <label className="mb-2 block text-[10px] font-black uppercase tracking-widest text-slate-400">카드 비율</label>
+                      <div className="grid grid-cols-3 gap-2">
+                        {PLAN_ASPECT_RATIOS.map((ratio) => (
+                          <button
+                            key={ratio}
+                            type="button"
+                            onClick={() => setPlanAspectRatio(ratio)}
+                            className={cn(
+                              "rounded-xl border px-3 py-2 text-[11px] font-black transition-all",
+                              planAspectRatio === ratio
+                                ? "border-slate-900 bg-slate-900 text-white"
+                                : "border-slate-200 bg-white text-slate-600 hover:border-slate-300",
+                            )}
+                          >
+                            {ratio}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="mt-3">
+                      <div className="mb-2 flex items-center justify-between">
+                        <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">슬라이드 개수</label>
+                        <span className="text-xs font-black text-pink-600">{planSlideCount}장</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="1"
+                        max="10"
+                        step="1"
+                        value={planSlideCount}
+                        onChange={(event) => setPlanSlideCount(Number.parseInt(event.target.value, 10))}
+                        className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-200 accent-[#E91E63]"
+                      />
+                    </div>
+                  </div>
 
                   <div className="mt-5 rounded-[1.5rem] border border-slate-100 bg-white p-4">
                     <label className="mb-2 block text-[10px] font-black uppercase tracking-widest text-slate-400">
@@ -2631,12 +2689,14 @@ export default function InstagramAiPage() {
                   onToneChange={setCaptionTone}
                   styleMode={captionStyle}
                   onStyleModeChange={setCaptionStyle}
-                  onGenerateCaption={createMode ? handleGeneratePlanAndCaption : handleGenerateCaption}
-                  isGeneratingCaption={createMode ? isPlanGenerating : isCaptionGenerating}
-                  quickGenerateLabel={createMode ? "기획안+캡션 생성하기" : undefined}
-                  generateButtonLabel={createMode ? "기획안+캡션 생성하기" : undefined}
-                  generateButtonLoadingLabel={createMode ? "기획안+캡션 생성 중..." : undefined}
-                  showQuickGenerateButton={!createMode}
+                  onGenerateCaption={handleGeneratePlanAndCaption}
+                  isGeneratingCaption={isPlanGenerating}
+                  quickGenerateLabel="기획안+캡션 생성하기"
+                  generateButtonLabel="기획안+캡션 생성하기"
+                  generateButtonLoadingLabel="기획안+캡션 생성 중..."
+                  showQuickGenerateButton={false}
+                  customStylePanelLabel="추천 앵글 선택"
+                  customStylePanel={angleSelectorPanel}
                   embedded
                   compact
                   className="min-h-[620px]"
@@ -2805,82 +2865,6 @@ export default function InstagramAiPage() {
                       )}
                     </div>
                   )}
-                </div>
-              )}
-
-              {createMode && showPlanAngleSelector && (
-                <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-4">
-                  <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">추천 앵글 선택</div>
-                  <div className="mt-1 text-xs font-bold text-slate-500">
-                    원하는 앵글을 고르거나, AI 자동 생성으로 바로 진행할 수 있습니다.
-                  </div>
-
-                  {isLoadingPlanAngles ? (
-                    <div className="mt-3 grid gap-3 md:grid-cols-3">
-                      {Array.from({ length: 3 }).map((_, index) => (
-                        <div
-                          key={`plan-angle-skeleton-${index}`}
-                          className="rounded-xl border border-slate-200 bg-slate-50 p-3"
-                        >
-                          <div className="h-4 w-20 animate-pulse rounded bg-slate-200" />
-                          <div className="mt-3 h-5 w-full animate-pulse rounded bg-slate-200" />
-                          <div className="mt-2 h-4 w-4/5 animate-pulse rounded bg-slate-200" />
-                        </div>
-                      ))}
-                    </div>
-                  ) : suggestedPlanAngles.length > 0 ? (
-                    <div className="mt-3 grid gap-3 md:grid-cols-3">
-                      {suggestedPlanAngles.map((item) => {
-                        const isSelected = selectedPlanAngle?.type === item.type;
-                        return (
-                          <button
-                            key={`${item.type}-${item.hook}`}
-                            type="button"
-                            onClick={() => setSelectedPlanAngle(item)}
-                            className={cn(
-                              "rounded-xl border px-3 py-3 text-left transition-all",
-                              isSelected
-                                ? "border-pink-500 bg-pink-50 ring-2 ring-pink-200"
-                                : "border-slate-200 bg-white hover:border-slate-300",
-                            )}
-                          >
-                            <div className={cn("text-[11px] font-black", isSelected ? "text-pink-700" : "text-slate-700")}>
-                              {item.label}
-                            </div>
-                            <div className={cn("mt-2 text-sm font-black leading-snug", isSelected ? "text-pink-800" : "text-slate-900")}>
-                              {item.hook}
-                            </div>
-                            <div className="mt-2 text-[11px] font-bold text-slate-500">
-                              {item.description}
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-xs font-bold text-amber-700">
-                      추천 앵글을 불러오지 못했습니다. 아래 &quot;AI한테 맡기기&quot;로 계속 진행할 수 있습니다.
-                    </div>
-                  )}
-
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => { void handleGenerateWithSelectedPlanAngle(); }}
-                      disabled={isPlanGenerating || isLoadingPlanAngles || !selectedPlanAngle}
-                      className="inline-flex items-center justify-center rounded-xl bg-pink-600 px-4 py-2 text-xs font-black text-white transition-all hover:bg-pink-700 disabled:bg-pink-300"
-                    >
-                      이 앵글로 생성하기
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => { void handleGeneratePlanWithoutAngle(); }}
-                      disabled={isPlanGenerating || isLoadingPlanAngles}
-                      className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-black text-slate-700 transition-all hover:bg-slate-50 disabled:opacity-60"
-                    >
-                      AI한테 맡기기
-                    </button>
-                  </div>
                 </div>
               )}
 
@@ -3131,7 +3115,7 @@ export default function InstagramAiPage() {
               )}
             </section>
 
-            {createMode && generatedPlanSlides.length > 0 && (
+            {generatedPlanSlides.length > 0 && (
               <section className="rounded-[2rem] border border-slate-200 bg-white p-6 shadow-sm">
                 <div className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-400">Cardnews Preview</div>
                 <h2 className="mt-2 text-xl font-black text-slate-900">카드뉴스 미리보기</h2>

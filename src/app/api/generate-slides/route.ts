@@ -340,6 +340,7 @@ const buildRuleBasedCaption = (params: {
   genre?: string;
   tone?: string;
   captionStyle?: string;
+  angleHook?: string | null;
 }) => {
   const titles = params.slides
     .map((slide) => {
@@ -363,10 +364,15 @@ const buildRuleBasedCaption = (params: {
       ? "이번 카드뉴스, 저장각 포인트만 감도 있게 정리해봤어요."
       : "이번 카드뉴스 핵심만 보기 좋게 정리해봤어요.";
 
+  const angleLine = typeof params.angleHook === "string" && params.angleHook.trim().length > 0
+    ? `${params.angleHook.trim()}를 중심으로 핵심만 정리했습니다.`
+    : "";
+
   const closer = "📌 저장해두고 놓치지 마세요!";
 
   return [
     opener,
+    angleLine,
     closer,
     hashtags || "#페스티벌 #카드뉴스",
   ]
@@ -439,6 +445,7 @@ const generateCaptionFromSlides = async (params: {
   tone?: string;
   captionStyle?: string;
   aspectRatio?: string;
+  angleHook?: string | null;
 }) => {
   try {
     const result = await geminiFlashModel.generateContent(buildCaptionPrompt(params));
@@ -457,6 +464,7 @@ const generateCaptionFromSlides = async (params: {
     genre: params.genre,
     tone: params.tone,
     captionStyle: params.captionStyle,
+    angleHook: params.angleHook,
   });
 };
 
@@ -691,7 +699,8 @@ ${slideGuide}
         continue;
       }
 
-      if (generationResult.provider === "free-ai") {
+      const usedFreeAiFallback = generationResult.provider === "free-ai";
+      if (usedFreeAiFallback) {
         aiProvider = "free-ai";
       }
 
@@ -702,6 +711,10 @@ ${slideGuide}
         validationIssues = [
           parseError instanceof Error ? `JSON 파싱 실패: ${parseError.message}` : "JSON 파싱 실패",
         ];
+        if (usedFreeAiFallback) {
+          validationIssues.push("쿼터 초과로 free-ai 폴백 응답 파싱에 실패해 재시도를 생략했습니다.");
+          break;
+        }
         if (attempt === MAX_GENERATION_ATTEMPTS) {
           break;
         }
@@ -724,6 +737,10 @@ ${slideGuide}
 
       if (validationIssues.length === 0) {
         passedValidation = true;
+        break;
+      }
+      if (usedFreeAiFallback) {
+        // Gemini quota-exceeded 상태에서는 동일 요청 재시도로 품질 개선이 거의 없어 지연만 증가함.
         break;
       }
       if (attempt === MAX_GENERATION_ATTEMPTS) {
@@ -764,6 +781,7 @@ ${slideGuide}
         sourceLabel,
         tone,
         captionStyle,
+        angleHook,
       })
       : "";
 

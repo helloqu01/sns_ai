@@ -164,16 +164,25 @@ const buildFestivalCaptionPrompt = (festivals: UnifiedFestival[], tone?: string,
 - 과한 분석이나 너무 긴 설명은 피하세요.
 
 [엄격한 작성 규칙]
-1. 도입부는 가볍고 자연스럽게 시작하세요.
-2. 가장 주목할 만한 페스티벌 3~5개만 선별해 짧게 요약하세요.
-3. QUEENS SMILE 서비스가 있는 페스티벌에만 브랜드를 자연스럽게 언급하세요.
-4. 마무리는 저장/참고를 유도하는 문장으로 끝내세요.
-5. 마지막에 해시태그 3~5개를 추가하세요.
+1. 결과는 캡션 본문만 출력하세요. 설명, 따옴표, 코드블록, 마크다운(별표/하이픈/번호 목록) 금지.
+2. 반드시 아래 [크롤링된 페스티벌 데이터]에 있는 행사만 언급하세요. 없는 행사명/정보를 절대 추가하지 마세요.
+3. 데이터가 1개면 그 1개만, 2개 이상이면 최대 5개까지만 요약하세요.
+4. QUEENS SMILE 서비스가 있는 페스티벌에만 브랜드를 자연스럽게 언급하세요.
+5. 마무리는 저장/참고를 유도하는 문장으로 끝내고, 마지막에 해시태그 3~5개를 붙이세요.
+6. 날짜/장소/장르는 제공 데이터와 다르게 쓰지 마세요.
 
 [크롤링된 페스티벌 데이터]
 ${festivalDataText}
 `;
 };
+
+const sanitizeGeneratedCaption = (text: string) =>
+  text
+    .replace(/\*\*/g, "")
+    .replace(/`/g, "")
+    .replace(/^\s*[-*]\s+/gm, "")
+    .replace(/^\s*\d+\.\s+/gm, "")
+    .trim();
 
 export async function POST(req: NextRequest) {
   try {
@@ -228,7 +237,7 @@ export async function POST(req: NextRequest) {
       buildFestivalCaptionPrompt(festivals, tone, captionStyle),
     );
     const response = await result.response;
-    const text = response.text().trim();
+    const text = sanitizeGeneratedCaption(response.text().trim());
 
     return NextResponse.json({ caption: text });
   } catch (error: unknown) {

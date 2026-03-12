@@ -19,13 +19,47 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!auth) {
+      setLoading(false);
       return;
     }
-    const unsubscribe = onAuthStateChanged(auth, (nextUser) => {
-      setUser(nextUser);
+
+    let active = true;
+    const safetyTimeoutId = setTimeout(() => {
+      if (!active) return;
+      console.warn("Auth state check timed out; forcing loading=false.");
       setLoading(false);
-    });
-    return () => unsubscribe();
+    }, 6000);
+
+    try {
+      const unsubscribe = onAuthStateChanged(
+        auth,
+        (nextUser) => {
+          if (!active) return;
+          clearTimeout(safetyTimeoutId);
+          setUser(nextUser);
+          setLoading(false);
+        },
+        (error) => {
+          if (!active) return;
+          clearTimeout(safetyTimeoutId);
+          console.error("Auth state check failed:", error);
+          setLoading(false);
+        },
+      );
+
+      return () => {
+        active = false;
+        clearTimeout(safetyTimeoutId);
+        unsubscribe();
+      };
+    } catch (error) {
+      clearTimeout(safetyTimeoutId);
+      console.error("Auth subscription setup failed:", error);
+      setLoading(false);
+      return () => {
+        active = false;
+      };
+    }
   }, []);
 
   const value = useMemo<AuthContextValue>(() => ({

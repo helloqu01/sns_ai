@@ -13,6 +13,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
   const pathname = usePathname();
   const router = useRouter();
+  const requireEmailVerification = process.env.NODE_ENV === "production"
+    ? process.env.NEXT_PUBLIC_REQUIRE_EMAIL_VERIFICATION !== "false"
+    : process.env.NEXT_PUBLIC_REQUIRE_EMAIL_VERIFICATION === "true";
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
     if (typeof window === "undefined") {
       return false;
@@ -27,7 +30,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   });
 
   const isLoginPage = pathname === "/login";
-  const isVerifiedUser = Boolean(user?.emailVerified);
+  const isVerifiedUser = Boolean(user && (!requireEmailVerification || user.emailVerified));
   const appBackgroundClass = "app-shell-bg";
 
   useEffect(() => {

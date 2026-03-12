@@ -34,6 +34,8 @@ interface CaptionEditorProps {
     generateButtonLabel?: string;
     generateButtonLoadingLabel?: string;
     showQuickGenerateButton?: boolean;
+    customStylePanel?: React.ReactNode;
+    customStylePanelLabel?: string;
 }
 
 export function CaptionEditor({
@@ -53,6 +55,8 @@ export function CaptionEditor({
     generateButtonLabel = 'AI 캡션 생성',
     generateButtonLoadingLabel = '캡션 생성 중...',
     showQuickGenerateButton = true,
+    customStylePanel,
+    customStylePanelLabel = '스타일 선택',
 }: CaptionEditorProps) {
     const [copied, setCopied] = useState(false);
 
@@ -124,26 +128,28 @@ export function CaptionEditor({
                         </div>
 
                         <div className="rounded-[1.35rem] border border-slate-100 bg-white/90 p-3">
-                            <label className="mb-2 block text-[10px] font-black uppercase tracking-widest text-slate-400">스타일 선택</label>
-                            <div className="grid grid-cols-2 gap-2">
-                                {captionStyles.map((style) => (
-                                    <button
-                                        key={style.id}
-                                        onClick={() => onStyleModeChange(style.id)}
-                                        className={cn(
-                                            "rounded-[1rem] border px-3 py-3 text-left transition-all",
-                                            styleMode === style.id
-                                                ? "border-slate-900 bg-slate-900 text-white shadow-lg shadow-slate-200"
-                                                : "border-slate-100 bg-white text-slate-600 hover:border-slate-200"
-                                        )}
-                                    >
-                                        <div className="text-[11px] font-black">{style.label}</div>
-                                        <div className={cn("mt-1 text-[10px] font-bold leading-relaxed", styleMode === style.id ? "text-white/70" : "text-slate-400")}>
-                                            {style.description}
-                                        </div>
-                                    </button>
-                                ))}
-                            </div>
+                            <label className="mb-2 block text-[10px] font-black uppercase tracking-widest text-slate-400">{customStylePanelLabel}</label>
+                            {customStylePanel || (
+                                <div className="grid grid-cols-2 gap-2">
+                                    {captionStyles.map((style) => (
+                                        <button
+                                            key={style.id}
+                                            onClick={() => onStyleModeChange(style.id)}
+                                            className={cn(
+                                                "rounded-[1rem] border px-3 py-3 text-left transition-all",
+                                                styleMode === style.id
+                                                    ? "border-slate-900 bg-slate-900 text-white shadow-lg shadow-slate-200"
+                                                    : "border-slate-100 bg-white text-slate-600 hover:border-slate-200"
+                                            )}
+                                        >
+                                            <div className="text-[11px] font-black">{style.label}</div>
+                                            <div className={cn("mt-1 text-[10px] font-bold leading-relaxed", styleMode === style.id ? "text-white/70" : "text-slate-400")}>
+                                                {style.description}
+                                            </div>
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
                         </div>
                     </div>
                 )}

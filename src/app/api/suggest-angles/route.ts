@@ -2,6 +2,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { geminiFlashModel } from "@/lib/gemini";
 import { getFirebaseAdmin } from "@/lib/firebase-admin-helpers";
 
+type SuggestedAngle = {
+  type: string;
+  label: string;
+  hook: string;
+  description: string;
+};
+
+const ANGLE_CACHE_TTL_MS = 10 * 60 * 1000;
+const angleCache = new Map<string, { expiresAt: number; angles: SuggestedAngle[] }>();
+
 const getUidFromRequest = async (req: NextRequest) => {
   const authHeader = req.headers.get("authorization") || "";
   const idToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
@@ -27,22 +37,97 @@ const ANGLE_TYPES = [
   { type: "STORY",    label: "스토리",      condition: "5년 이상 역사가 있는 행사일 때" },
 ] as const;
 
-const fallbackAngles = [
-  { type: "VIBE",     label: "감성/분위기", hook: "이번 시즌 꼭 가야 할 이유",           description: "분위기와 경험을 중심으로 한 앵글" },
-  { type: "LINEUP",   label: "라인업",      hook: "이 라인업 보고도 안 가면 후회",        description: "아티스트 기대감을 자극하는 앵글" },
-  { type: "SCARCITY", label: "희소성",      hook: "딱 이번뿐, 놓치면 1년 기다려야 해",   description: "희소성으로 클릭을 유도하는 앵글" },
+const ANGLE_DEFINITIONS = [
+  { type: "SCARCITY",  label: "희소성",      hook: (title: string) => `${title}, 이번이 마지막일 수도`,         description: "희소성으로 클릭을 유도하는 앵글",    condition: (c: string) => /매진|한정|단독|마지막|1회/.test(c) },
+  { type: "LINEUP",    label: "라인업",      hook: () => "이 라인업, 다시 볼 수 없다",                         description: "아티스트 기대감을 자극하는 앵글",    condition: (c: string) => /라인업|아티스트|출연|헤드라이너|밴드|가수/.test(c) },
+  { type: "VIBE",      label: "감성/분위기", hook: (title: string) => `${title} — 올해 꼭 가야 할 이유`,        description: "분위기와 경험을 중심으로 한 앵글",   condition: () => true },
+  { type: "TIP",       label: "실용/꿀팁",   hook: () => "가기 전에 꼭 알아야 할 것들",                         description: "저장하고 싶은 실용 정보 앵글",       condition: (c: string) => /주차|할인|예매|팁|준비|패킹/.test(c) },
+  { type: "VALUE",     label: "가성비",      hook: () => "이 퀄리티에 이 가격, 올해 최고의 선택",              description: "합리적 선택을 어필하는 앵글",        condition: (c: string) => /가격|원|무료|할인|티켓|입장료/.test(c) },
+  { type: "TREND",     label: "트렌드",      hook: (title: string) => `지금 이걸 모르면 뒤처진다 — ${title}`,   description: "MZ 감성 트렌드 앵글",               condition: (c: string) => /트렌드|힙|MZ|핫|인기|버즈/.test(c) },
+  { type: "TOGETHER",  label: "동행/공유",   hook: () => "혼자 가기 아까운 공연, 같이 가요",                    description: "함께 가고 싶은 감정을 자극하는 앵글", condition: (c: string) => /페스티벌|야외|축제|파티|함께/.test(c) },
+  { type: "STORY",     label: "스토리",      hook: (title: string) => `${title}의 역사가 이번 무대에`,          description: "브랜드 서사와 역사를 강조하는 앵글", condition: (c: string) => /주년|역사|기념|창립|시즌/.test(c) },
 ];
 
+const buildDynamicFallback = (content: string, title: string) => {
+  // condition 매칭되는 앵글 우선 선택
+  const matched = ANGLE_DEFINITIONS.filter((a) => a.type !== "VIBE" && a.condition(content));
+  // VIBE는 항상 후보
+  const vibe = ANGLE_DEFINITIONS.find((a) => a.type === "VIBE")!;
+
+  // 매칭된 것 중 2개 + VIBE 조합, 없으면 LINEUP + SCARCITY + VIBE
+  const selected = matched.length >= 2
+    ? [matched[0], matched[1], vibe]
+    : matched.length === 1
+      ? [matched[0], vibe, ANGLE_DEFINITIONS.find((a) => a.type === "LINEUP")!]
+      : [ANGLE_DEFINITIONS.find((a) => a.type === "LINEUP")!, ANGLE_DEFINITIONS.find((a) => a.type === "SCARCITY")!, vibe];
+
+  return selected.slice(0, 3).map((a) => ({
+    type: a.type,
+    label: a.label,
+    hook: a.hook(title),
+    description: a.description,
+  }));
+};
+
+const toCacheKey = (content: string) =>
+  content.replace(/\s+/g, " ").trim().slice(0, 1200).toLowerCase();
+
+const readCachedAngles = (content: string) => {
+  const key = toCacheKey(content);
+  const cached = angleCache.get(key);
+  if (!cached) return null;
+  if (cached.expiresAt < Date.now()) {
+    angleCache.delete(key);
+    return null;
+  }
+  return cached.angles;
+};
+
+const writeCachedAngles = (content: string, angles: SuggestedAngle[]) => {
+  const key = toCacheKey(content);
+  angleCache.set(key, { angles, expiresAt: Date.now() + ANGLE_CACHE_TTL_MS });
+};
+
+const normalizeSuggestedAngles = (value: unknown): SuggestedAngle[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item): SuggestedAngle | null => {
+      if (!item || typeof item !== "object") return null;
+      const raw = item as Record<string, unknown>;
+      const type = typeof raw.type === "string" && raw.type.trim().length > 0 ? raw.type.trim() : "CUSTOM";
+      const label = typeof raw.label === "string" ? raw.label.trim() : "";
+      const hook = typeof raw.hook === "string" ? raw.hook.trim() : "";
+      const description = typeof raw.description === "string" ? raw.description.trim() : "";
+      if (!label && !hook && !description) return null;
+      return { type, label, hook, description };
+    })
+    .filter((item): item is SuggestedAngle => Boolean(item))
+    .slice(0, 3);
+};
+
 export async function POST(req: NextRequest) {
+  let parsedContent = "";
+  let parsedTitle = "이 행사";
   try {
     const uid = await getUidFromRequest(req);
     if (!uid) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { content } = await req.json();
+    const payload = await req.json();
+    const content = payload?.content;
+    const title = payload?.title;
     if (!content) {
       return NextResponse.json({ error: "Content is required" }, { status: 400 });
+    }
+    const normalizedContent = typeof content === "string" ? content : String(content);
+    const normalizedTitle = typeof title === "string" && title.trim().length > 0 ? title.trim() : "이 행사";
+    parsedContent = normalizedContent;
+    parsedTitle = normalizedTitle;
+
+    const cachedAngles = readCachedAngles(normalizedContent);
+    if (cachedAngles) {
+      return NextResponse.json({ angles: cachedAngles });
     }
 
     const angleTypeList = ANGLE_TYPES.map(
@@ -57,7 +142,7 @@ export async function POST(req: NextRequest) {
 ${angleTypeList}
 
 [행사 정보]
-${content}
+${normalizedContent}
 
 [작성 규칙]
 1. 위 8종 중 이 행사에 가장 적합한 타입 3개를 선택하세요.
@@ -80,13 +165,17 @@ ${content}
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error("JSON not found");
       const parsed = JSON.parse(jsonMatch[0]);
-      const angles = Array.isArray(parsed.angles) ? parsed.angles.slice(0, 3) : [];
+      const angles = normalizeSuggestedAngles(parsed.angles);
       if (angles.length === 0) throw new Error("Empty angles");
+      writeCachedAngles(normalizedContent, angles);
       return NextResponse.json({ angles });
     } catch {
-      return NextResponse.json({ angles: fallbackAngles });
+      const dynamicFallback = buildDynamicFallback(parsedContent, parsedTitle);
+      writeCachedAngles(parsedContent, dynamicFallback);
+      return NextResponse.json({ angles: dynamicFallback });
     }
   } catch {
-    return NextResponse.json({ angles: fallbackAngles });
+    const dynamicFallback = buildDynamicFallback(parsedContent, parsedTitle);
+    return NextResponse.json({ angles: dynamicFallback });
   }
 }

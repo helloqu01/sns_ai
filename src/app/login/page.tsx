@@ -48,6 +48,9 @@ const toAuthorizedContinueUrl = () => {
 
 export default function LoginPage() {
   const router = useRouter();
+  const requireEmailVerification = process.env.NODE_ENV === "production"
+    ? process.env.NEXT_PUBLIC_REQUIRE_EMAIL_VERIFICATION !== "false"
+    : process.env.NEXT_PUBLIC_REQUIRE_EMAIL_VERIFICATION === "true";
 
   const [mode, setMode] = useState<AuthMode>("login");
   const [email, setEmail] = useState("");
@@ -95,7 +98,7 @@ export default function LoginPage() {
 
     const credential = await signInWithEmailAndPassword(auth, email, password);
     await credential.user.reload();
-    if (!credential.user.emailVerified) {
+    if (requireEmailVerification && !credential.user.emailVerified) {
       try {
         await sendEmailVerification(credential.user, getActionCodeSettings());
       } catch {
@@ -130,6 +133,12 @@ export default function LoginPage() {
 
     const credential = await createUserWithEmailAndPassword(auth, email, password);
     await credential.user.reload();
+    if (!requireEmailVerification) {
+      showMessage("success", "회원가입이 완료되었고 바로 로그인되었습니다.");
+      router.replace("/");
+      return;
+    }
+
     try {
       await sendEmailVerification(credential.user, getActionCodeSettings());
       showMessage("success", "회원가입 요청이 완료되었고 이메일 인증 메일을 발송했습니다.");
@@ -183,7 +192,9 @@ export default function LoginPage() {
             <p className="mt-5 text-sm font-semibold leading-relaxed text-slate-300">
               {mode === "signup"
                 ? "회원가입 요청 즉시 인증 메일을 보내드리며, 인증 완료 후 대시보드 기능을 바로 사용할 수 있습니다."
-                : "인증된 이메일 계정만 로그인 가능하도록 구성되어 있어 계정 보안과 접근 제어를 강화합니다."}
+                : (requireEmailVerification
+                  ? "인증된 이메일 계정만 로그인 가능하도록 구성되어 있어 계정 보안과 접근 제어를 강화합니다."
+                  : "개발 환경에서는 이메일 인증 없이 로그인할 수 있습니다.")}
             </p>
           </div>
 
@@ -196,7 +207,9 @@ export default function LoginPage() {
               <div className={`h-full rounded-full ${mode === "signup" ? "w-2/3 bg-rose-400" : "w-1/2 bg-cyan-400"}`} />
             </div>
             <p className="text-xs font-semibold text-slate-300">
-              회원가입 후 이메일 인증을 완료해야 로그인됩니다.
+              {requireEmailVerification
+                ? "회원가입 후 이메일 인증을 완료해야 로그인됩니다."
+                : "개발 환경에서는 이메일 인증 없이 바로 로그인됩니다."}
             </p>
           </div>
         </div>
@@ -339,8 +352,12 @@ export default function LoginPage() {
 
             <p className="mt-5 text-xs font-semibold text-slate-500">
               {mode === "signup"
-                ? "가입 요청 후 메일함에서 인증 링크를 클릭하면 계정이 활성화됩니다."
-                : "미인증 계정은 로그인되지 않으며 인증 메일이 자동 재발송됩니다."}
+                ? (requireEmailVerification
+                  ? "가입 요청 후 메일함에서 인증 링크를 클릭하면 계정이 활성화됩니다."
+                  : "개발 환경에서는 회원가입 후 바로 로그인됩니다.")
+                : (requireEmailVerification
+                  ? "미인증 계정은 로그인되지 않으며 인증 메일이 자동 재발송됩니다."
+                  : "개발 환경에서는 이메일 인증 없이 로그인할 수 있습니다.")}
             </p>
           </div>
         </div>

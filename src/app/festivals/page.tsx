@@ -318,6 +318,7 @@ export default function FestivalsPage() {
 
     const handleCreatePlan = (f: UnifiedFestival) => {
         const params = new URLSearchParams({
+            autoplan: "1",
             festivalId: f.id,
             title: f.title,
             location: f.location,
@@ -328,7 +329,7 @@ export default function FestivalsPage() {
             sourceLabel: f.sourceLabel || f.source,
             imageUrl: f.imageUrl || ''
         });
-        window.location.href = `/create?${params.toString()}`;
+        window.location.href = `/instagram-ai?${params.toString()}`;
     };
 
     const formatDateTime = (iso: string) => {

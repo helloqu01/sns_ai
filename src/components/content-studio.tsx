@@ -20,10 +20,14 @@ const captionToneOptions = [
   { id: 'trendy', label: '트렌디', description: '감각적이고 힙한 톤' },
 ];
 const captionStyleOptions = [
-  { id: 'balanced', label: '밸런스', description: '소개와 안내를 균형 있게' },
-  { id: 'magazine', label: '매거진', description: '에디토리얼 느낌으로 정리' },
-  { id: 'promotional', label: '프로모션', description: '참여와 반응을 유도' },
-  { id: 'minimal', label: '미니멀', description: '짧고 명확하게 요약' },
+  { id: 'SCARCITY',  label: '희소성',      description: '놓치면 후회하는 긴박감' },
+  { id: 'LINEUP',    label: '라인업',      description: '아티스트 기대감 자극' },
+  { id: 'VIBE',      label: '감성/분위기', description: '경험과 분위기 중심' },
+  { id: 'TIP',       label: '실용/꿀팁',   description: '저장하고 싶은 정보' },
+  { id: 'VALUE',     label: '가성비',      description: '합리적 선택 어필' },
+  { id: 'TREND',     label: '트렌드',      description: 'MZ 감성 유행 편승' },
+  { id: 'TOGETHER',  label: '동행/공유',   description: '함께 가고 싶은 감정' },
+  { id: 'STORY',     label: '스토리',      description: '브랜드 서사와 역사' },
 ];
 const filterOptions: { id: 'all' | 'today' | 'this-week' | '60-days'; label: string }[] = [
   { id: 'all', label: '전체' },
@@ -180,6 +184,16 @@ type SuggestAnglesResponse = {
   error?: string;
 };
 
+const FALLBACK_SUGGESTED_ANGLES: SuggestedAngle[] = [
+  { type: 'VIBE', label: '감성/분위기', hook: '이번 시즌 꼭 가야 할 이유', description: '분위기와 경험을 중심으로 한 앵글' },
+  { type: 'LINEUP', label: '라인업', hook: '이 라인업 보고도 안 가면 후회', description: '아티스트 기대감을 자극하는 앵글' },
+  { type: 'SCARCITY', label: '희소성', hook: '딱 이번뿐, 놓치면 1년 기다려야 해', description: '희소성으로 클릭을 유도하는 앵글' },
+];
+const SUGGEST_ANGLES_TIMEOUT_MS = 10_000;
+const SUGGEST_ANGLES_CACHE_TTL_MS = 10 * 60 * 1000;
+const buildSuggestedAnglesCacheKey = (content: string) =>
+  content.replace(/\s+/g, ' ').trim().slice(0, 1200).toLowerCase();
+
 type ContentStudioProps = {
   embedded?: boolean;
   selectedCardnewsId?: string | null;
@@ -225,7 +239,7 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
   const [slideCount, setSlideCount] = useState(6);
   const [ratio, setRatio] = useState('4:5');
   const [captionTone, setCaptionTone] = useState('friendly');
-  const [captionStyleMode, setCaptionStyleMode] = useState('balanced');
+  const [captionStyleMode, setCaptionStyleMode] = useState('');
   const [isCaptionGenerating, setIsCaptionGenerating] = useState(false);
 
   const [genre, setGenre] = useState('');
@@ -274,6 +288,7 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
   const [sortBy, setSortBy] = useState<'date-asc' | 'date-desc'>('date-asc');
   const [currentPage, setCurrentPage] = useState(1);
   const festivalListRef = useRef<HTMLDivElement | null>(null);
+  const suggestedAnglesCacheRef = useRef<Map<string, { angles: angle[]; expiresAt: number }>>(new Map());
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
 
   const fetchFestivals = async (refresh = false) => {
@@ -729,30 +744,57 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
       return [] as angle[];
     }
 
+    const cacheKey = buildSuggestedAnglesCacheKey(targetContent);
+    const cached = suggestedAnglesCacheRef.current.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      setShowAngleSelector(true);
+      setIsLoadingAngles(false);
+      setSelectedAngle(null);
+      setSuggestedAngles(cached.angles);
+      return cached.angles;
+    }
+    if (cached) {
+      suggestedAnglesCacheRef.current.delete(cacheKey);
+    }
+
     setShowAngleSelector(true);
     setIsLoadingAngles(true);
     setSelectedAngle(null);
 
     try {
       const headers = await buildAuthHeaders(true);
-      const suggestAnglesResponse = await fetch('/api/suggest-angles', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ content: targetContent }),
-      });
-      const suggestAnglesData = (await suggestAnglesResponse.json().catch(() => ({}))) as SuggestAnglesResponse;
-      if (!suggestAnglesResponse.ok) {
-        setSuggestedAngles([]);
-        return [] as angle[];
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), SUGGEST_ANGLES_TIMEOUT_MS);
+      try {
+        const suggestAnglesResponse = await fetch('/api/suggest-angles', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ content: targetContent }),
+          signal: controller.signal,
+        });
+        const suggestAnglesData = (await suggestAnglesResponse.json().catch(() => ({}))) as SuggestAnglesResponse;
+        let nextAngles: angle[] = [];
+        if (!suggestAnglesResponse.ok) {
+          nextAngles = FALLBACK_SUGGESTED_ANGLES;
+        } else {
+          nextAngles = normalizeSuggestedAngles(suggestAnglesData.angles);
+        }
+        if (nextAngles.length === 0) {
+          nextAngles = FALLBACK_SUGGESTED_ANGLES;
+        }
+        suggestedAnglesCacheRef.current.set(cacheKey, {
+          angles: nextAngles,
+          expiresAt: Date.now() + SUGGEST_ANGLES_CACHE_TTL_MS,
+        });
+        setSuggestedAngles(nextAngles);
+        return nextAngles;
+      } finally {
+        clearTimeout(timeoutId);
       }
-
-      const nextAngles = normalizeSuggestedAngles(suggestAnglesData.angles);
-      setSuggestedAngles(nextAngles);
-      return nextAngles;
     } catch (suggestAnglesError) {
       console.warn('Failed to load suggested angles:', suggestAnglesError);
-      setSuggestedAngles([]);
-      return [] as angle[];
+      setSuggestedAngles(FALLBACK_SUGGESTED_ANGLES);
+      return FALLBACK_SUGGESTED_ANGLES;
     } finally {
       setIsLoadingAngles(false);
     }
@@ -1191,7 +1233,7 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
                     </div>
 
                     <div>
-                      <p className="text-[11px] font-black text-slate-600">스타일 선택</p>
+                      <p className="text-[11px] font-black text-slate-600">앵글 선택</p>
                       <div className="mt-2 grid grid-cols-2 gap-2">
                         {captionStyleOptions.map((styleOption) => (
                           <button
