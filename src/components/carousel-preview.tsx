@@ -131,11 +131,8 @@ export function CarouselPreview({
 
                             <div className="relative z-10 w-full h-full flex flex-col">
                                 {isCoverSlide ? (
-                                    <div className="w-full rounded-2xl border border-white/30 bg-black/35 p-4 backdrop-blur-sm">
-                                        <div className="mb-2 text-[10px] font-black uppercase tracking-[0.28em] text-pink-200">
-                                            Festival Cover
-                                        </div>
-                                        <h2 className="text-[30px] font-black leading-[1.1] tracking-[-0.02em] text-white drop-shadow-md">
+                                    <div className="mt-auto max-w-[88%] pb-1">
+                                        <h2 className="text-[34px] font-black leading-[1.14] tracking-[-0.02em] text-white drop-shadow-[0_6px_24px_rgba(2,6,23,0.55)]">
                                             {titleText}
                                         </h2>
                                     </div>

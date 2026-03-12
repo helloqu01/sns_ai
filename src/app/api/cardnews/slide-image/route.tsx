@@ -60,6 +60,8 @@ export async function GET(req: NextRequest) {
   const title = clampText(searchParams.get("title"), 80, "카드뉴스");
   const body = clampText(searchParams.get("body"), 260, "핵심 정보를 확인하세요.");
   const index = clampText(searchParams.get("index"), 4, "1");
+  const indexNumber = Number.parseInt(index, 10);
+  const isCoverSlide = Number.isFinite(indexNumber) && indexNumber === 1;
   const bgUrl = searchParams.get("bg");
   const { width, height } = resolveSize(ratio, renderMode);
 
@@ -67,6 +69,7 @@ export async function GET(req: NextRequest) {
     ? {
       backgroundImage: `linear-gradient(180deg, rgba(2,6,23,0.35) 0%, rgba(2,6,23,0.8) 100%), url(${bgUrl})`,
       backgroundSize: "cover",
+      backgroundRepeat: "no-repeat",
       backgroundPosition: "center",
     }
     : {
@@ -82,68 +85,107 @@ export async function GET(req: NextRequest) {
           height: "100%",
           display: "flex",
           position: "relative",
-          padding: 64,
+          padding: isCoverSlide ? 52 : 64,
           color: "#ffffff",
           fontFamily: "sans-serif",
           ...backgroundStyle,
         }}
       >
-        <div
-          style={{
-            position: "absolute",
-            top: 34,
-            right: 34,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            borderRadius: 9999,
-            border: "1px solid rgba(255,255,255,0.28)",
-            background: "rgba(15,23,42,0.45)",
-            padding: "10px 16px",
-            fontSize: 22,
-            fontWeight: 700,
-          }}
-        >
-          {`SLIDE ${index}`}
-        </div>
-        <div
-          style={{
-            width: "100%",
-            marginTop: "auto",
-            marginBottom: "auto",
-            display: "flex",
-            flexDirection: "column",
-            gap: 28,
-            borderRadius: 36,
-            background: "rgba(2,6,23,0.42)",
-            border: "1px solid rgba(255,255,255,0.18)",
-            backdropFilter: "blur(4px)",
-            padding: "46px 44px",
-          }}
-        >
-          <div
-            style={{
-              fontSize: 62,
-              lineHeight: 1.2,
-              fontWeight: 900,
-              letterSpacing: -1.4,
-              whiteSpace: "pre-wrap",
-            }}
-          >
-            {title}
-          </div>
-          <div
-            style={{
-              fontSize: 34,
-              lineHeight: 1.4,
-              fontWeight: 600,
-              opacity: 0.95,
-              whiteSpace: "pre-wrap",
-            }}
-          >
-            {body}
-          </div>
-        </div>
+        {isCoverSlide ? (
+          <>
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                background:
+                  "linear-gradient(180deg, rgba(2,6,23,0.06) 0%, rgba(2,6,23,0.22) 45%, rgba(2,6,23,0.68) 100%)",
+              }}
+            />
+            <div
+              style={{
+                position: "relative",
+                zIndex: 1,
+                width: "100%",
+                marginTop: "auto",
+                display: "flex",
+                alignItems: "flex-end",
+              }}
+            >
+              <div
+                style={{
+                  maxWidth: "90%",
+                  fontSize: Math.max(50, Math.round(width * 0.056)),
+                  lineHeight: 1.16,
+                  fontWeight: 900,
+                  letterSpacing: -1.6,
+                  whiteSpace: "pre-wrap",
+                  textShadow: "0 6px 24px rgba(2,6,23,0.55)",
+                }}
+              >
+                {title}
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div
+              style={{
+                position: "absolute",
+                top: 34,
+                right: 34,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                borderRadius: 9999,
+                border: "1px solid rgba(255,255,255,0.28)",
+                background: "rgba(15,23,42,0.45)",
+                padding: "10px 16px",
+                fontSize: 22,
+                fontWeight: 700,
+              }}
+            >
+              {`SLIDE ${index}`}
+            </div>
+            <div
+              style={{
+                width: "100%",
+                marginTop: "auto",
+                marginBottom: "auto",
+                display: "flex",
+                flexDirection: "column",
+                gap: 28,
+                borderRadius: 36,
+                background: "rgba(2,6,23,0.42)",
+                border: "1px solid rgba(255,255,255,0.18)",
+                backdropFilter: "blur(4px)",
+                padding: "46px 44px",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 62,
+                  lineHeight: 1.2,
+                  fontWeight: 900,
+                  letterSpacing: -1.4,
+                  whiteSpace: "pre-wrap",
+                }}
+              >
+                {title}
+              </div>
+              <div
+                style={{
+                  fontSize: 34,
+                  lineHeight: 1.4,
+                  fontWeight: 600,
+                  opacity: 0.95,
+                  whiteSpace: "pre-wrap",
+                }}
+              >
+                {body}
+              </div>
+            </div>
+          </>
+        )}
       </div>
     ),
     { width, height },

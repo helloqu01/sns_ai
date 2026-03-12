@@ -190,6 +190,16 @@ const FALLBACK_PLAN_ANGLES: SuggestedAngle[] = [
   { type: "LINEUP", label: "라인업", hook: "이 라인업 보고도 안 가면 후회", description: "아티스트 기대감을 자극하는 앵글" },
   { type: "SCARCITY", label: "희소성", hook: "딱 이번뿐, 놓치면 1년 기다려야 해", description: "희소성으로 클릭을 유도하는 앵글" },
 ];
+const ANGLE_ALL_OPTIONS = [
+  { id: "SCARCITY", label: "희소성", description: "놓치면 후회하는 긴박감" },
+  { id: "LINEUP", label: "라인업", description: "아티스트 기대감 자극" },
+  { id: "VIBE", label: "감성/분위기", description: "경험과 분위기 중심" },
+  { id: "TIP", label: "실용/꿀팁", description: "저장하고 싶은 정보" },
+  { id: "VALUE", label: "가성비", description: "합리적 선택 어필" },
+  { id: "TREND", label: "트렌드", description: "MZ 감성 유행 편승" },
+  { id: "TOGETHER", label: "동행/공유", description: "함께 가고 싶은 감정" },
+  { id: "STORY", label: "스토리", description: "브랜드 서사와 역사" },
+] as const;
 const normalizeSuggestedAngles = (value: unknown): SuggestedAngle[] => {
   if (!Array.isArray(value)) return [] as SuggestedAngle[];
 
@@ -699,6 +709,7 @@ export default function InstagramAiPage() {
   const [suggestedPlanAngles, setSuggestedPlanAngles] = useState<SuggestedAngle[]>([]);
   const [selectedPlanAngle, setSelectedPlanAngle] = useState<SuggestedAngle | null>(null);
   const [showPlanAngleSelector, setShowPlanAngleSelector] = useState(false);
+  const [showAllPlanAngles, setShowAllPlanAngles] = useState(false);
   const [isLoadingPlanAngles, setIsLoadingPlanAngles] = useState(false);
   const [pendingPlanGeneration, setPendingPlanGeneration] = useState<PlanGenerationContext | null>(null);
   const [isPlanGenerating, setIsPlanGenerating] = useState(false);
@@ -1522,6 +1533,9 @@ export default function InstagramAiPage() {
       const cachedAngles = planAngleCacheRef.current.get(angleCacheKey);
       if (cachedAngles && cachedAngles.expiresAt > Date.now()) {
         setSuggestedPlanAngles(cachedAngles.angles);
+        if (cachedAngles.angles.length > 0) {
+          setSelectedPlanAngle(cachedAngles.angles[0]);
+        }
         setFeedbackMessage("추천 앵글을 선택한 뒤 생성을 진행하세요.");
         return;
       }
@@ -1563,6 +1577,9 @@ export default function InstagramAiPage() {
         expiresAt: Date.now() + PLAN_ANGLE_CACHE_TTL_MS,
       });
       setSuggestedPlanAngles(nextAngles);
+      if (nextAngles.length > 0) {
+        setSelectedPlanAngle(nextAngles[0]);
+      }
       setFeedbackMessage("추천 앵글을 선택한 뒤 생성을 진행하세요.");
     } catch (error) {
       console.error(error);
@@ -1637,13 +1654,9 @@ export default function InstagramAiPage() {
       return (
         <div className="grid gap-2">
           {Array.from({ length: 3 }).map((_, index) => (
-            <div
-              key={`plan-angle-inline-skeleton-${index}`}
-              className="rounded-xl border border-slate-200 bg-slate-50 p-3"
-            >
+            <div key={`plan-angle-skeleton-${index}`} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
               <div className="h-4 w-20 animate-pulse rounded bg-slate-200" />
               <div className="mt-2 h-4 w-full animate-pulse rounded bg-slate-200" />
-              <div className="mt-2 h-3 w-4/5 animate-pulse rounded bg-slate-200" />
             </div>
           ))}
         </div>
@@ -1662,20 +1675,15 @@ export default function InstagramAiPage() {
                   type="button"
                   onClick={() => setSelectedPlanAngle(item)}
                   className={cn(
-                    "rounded-xl border px-3 py-3 text-left transition-all",
+                    "rounded-xl border px-3 py-2.5 text-left transition-all",
                     isSelected
-                      ? "border-pink-500 bg-pink-50 ring-2 ring-pink-200"
-                      : "border-slate-200 bg-white hover:border-slate-300",
+                      ? "border-pink-500 bg-pink-500 text-white shadow-lg"
+                      : "border-slate-200 bg-white text-slate-600 hover:border-pink-300",
                   )}
                 >
-                  <div className={cn("text-[11px] font-black", isSelected ? "text-pink-700" : "text-slate-700")}>
-                    {item.label}
-                  </div>
-                  <div className={cn("mt-1 text-sm font-black leading-snug", isSelected ? "text-pink-800" : "text-slate-900")}>
+                  <div className="text-[11px] font-black">{item.label}</div>
+                  <div className={cn("mt-1 text-[10px] font-bold leading-relaxed", isSelected ? "text-white/70" : "text-slate-400")}>
                     {item.hook}
-                  </div>
-                  <div className="mt-1 text-[11px] font-bold text-slate-500">
-                    {item.description}
                   </div>
                 </button>
               );
@@ -1684,6 +1692,56 @@ export default function InstagramAiPage() {
         ) : (
           <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-[11px] font-bold text-amber-700">
             추천 앵글을 불러오지 못했습니다. AI한테 맡기기로 계속 진행할 수 있습니다.
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={() => setShowAllPlanAngles((prev) => !prev)}
+          className="w-full rounded-xl border border-dashed border-slate-200 py-2 text-[11px] font-bold text-slate-400 transition-colors hover:border-pink-300 hover:text-pink-500"
+        >
+          {showAllPlanAngles ? "▲ 접기" : "▼ 다른 앵글 더보기"}
+        </button>
+
+        {showAllPlanAngles && (
+          <div className="grid grid-cols-2 gap-2">
+            {ANGLE_ALL_OPTIONS.map((option) => {
+              const isRecommended = suggestedPlanAngles.some((a) => a.type === option.id);
+              const isSelected = selectedPlanAngle?.type === option.id;
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => {
+                    const matched = suggestedPlanAngles.find((a) => a.type === option.id);
+                    const angleToSelect: SuggestedAngle = matched ?? {
+                      type: option.id,
+                      label: option.label,
+                      hook: option.description,
+                      description: option.description,
+                    };
+                    setSelectedPlanAngle(angleToSelect);
+                  }}
+                  className={cn(
+                    "rounded-xl border px-3 py-2.5 text-left transition-all",
+                    isSelected
+                      ? "border-pink-500 bg-pink-500 text-white shadow-lg"
+                      : isRecommended
+                        ? "border-pink-300 bg-pink-50 text-pink-700 hover:border-pink-500"
+                        : "border-slate-200 bg-white text-slate-600 hover:border-slate-300",
+                  )}
+                >
+                  <div className="text-[11px] font-black">{option.label}</div>
+                  <div className={cn(
+                    "mt-1 text-[10px] font-bold leading-relaxed",
+                    isSelected ? "text-white/70" : isRecommended ? "text-pink-400" : "text-slate-400",
+                  )}>
+                    {option.description}
+                    {isRecommended && <span className="ml-1">✦</span>}
+                  </div>
+                </button>
+              );
+            })}
           </div>
         )}
 
@@ -1713,6 +1771,7 @@ export default function InstagramAiPage() {
     isLoadingPlanAngles,
     isPlanGenerating,
     selectedPlanAngle,
+    showAllPlanAngles,
     showPlanAngleSelector,
     suggestedPlanAngles,
   ]);
