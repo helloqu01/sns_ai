@@ -2306,7 +2306,7 @@ export default function InstagramAiPage() {
           <h1 className="mt-4 text-3xl font-black tracking-tight text-slate-900">인스타그램 자동 게시 스튜디오</h1>
           <p className="mt-2 max-w-3xl text-sm font-bold leading-relaxed text-slate-500">
             행사 포스터 1장을 기준으로 캡션 생성, 즉시 게시, 예약 발행까지 한 화면에서 처리합니다.
-            카드뉴스 기획/생성과 저장된 콘텐츠 확인은 아래의 콘텐츠 스튜디오 탭에서 진행할 수 있습니다.
+            카드뉴스 기획/생성과 저장된 콘텐츠 확인은 아래 콘텐츠 스튜디오 영역에서 이어서 진행할 수 있습니다.
           </p>
         </div>
 
