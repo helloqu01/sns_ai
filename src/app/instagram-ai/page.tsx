@@ -13,10 +13,8 @@ import {
   Instagram,
   Link2,
   RefreshCw,
-  Rocket,
   AlertTriangle,
   CalendarPlus2,
-  LayoutDashboard,
   XCircle,
 } from "lucide-react";
 import { useAuth } from "@/components/auth-provider";
@@ -26,7 +24,7 @@ import { cn } from "@/lib/utils";
 import { fetchFestivalsFromApi } from "@/lib/festival-client-cache";
 import type { FestivalSource, UnifiedFestival } from "@/types/festival";
 import type { InstagramPublishingRecord } from "@/types/instagram-publishing";
-import ContentStudio from "@/components/content-studio";
+import ContentStudio, { type ContentStudioPublishPayload } from "@/components/content-studio";
 import { SavedContentBoard } from "@/components/saved-content-board";
 import { CarouselPreview, type Slide } from "@/components/carousel-preview";
 
@@ -654,6 +652,20 @@ export default function InstagramAiPage() {
     return trimmed || "/";
   }, [pathname]);
   const isAutoPlanRequest = searchParams.get("autoplan") === "1" || normalizedPathname === "/create";
+  const isAutoCurationRequest = searchParams.get("curation") === "1";
+  const autoCurationIds = useMemo(() => {
+    const raw = searchParams.get("curationIds");
+    if (!raw) return [] as string[];
+    return raw
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean)
+      .slice(0, 8);
+  }, [searchParams]);
+  const autoCurationTheme = useMemo(
+    () => searchParams.get("curationTheme")?.trim() || "이번 주 공연 소식",
+    [searchParams],
+  );
   const fixedFestivalData = useMemo(
     () => toFixedFestival({
       id: searchParams.get("festivalId"),
@@ -669,6 +681,7 @@ export default function InstagramAiPage() {
     }),
     [searchParams],
   );
+  const autoPlanFestival = fixedFestivalData;
   const preferredFestivalIdRef = useRef<string | null>(
     typeof window !== "undefined"
       ? new URLSearchParams(window.location.search).get("festivalId")?.trim() || null
@@ -693,7 +706,6 @@ export default function InstagramAiPage() {
     })(),
   );
 
-  const [activeTab, setActiveTab] = useState<"automation" | "studio">("automation");
   const [festivals, setFestivals] = useState<UnifiedFestival[]>([]);
   const [festivalsLoading, setFestivalsLoading] = useState(true);
   const [selectedFestivalId, setSelectedFestivalId] = useState("");
@@ -1791,23 +1803,75 @@ export default function InstagramAiPage() {
   );
 
   const buildSlideRenderUrl = useCallback(
-    (slide: Slide, index: number) => {
+    (
+      slide: Slide,
+      index: number,
+      options?: {
+        aspectRatio?: string | null;
+        backgroundImageUrl?: string | null;
+      },
+    ) => {
       if (typeof window === "undefined") return null;
       const params = new URLSearchParams();
       params.set("title", (slide.title || `슬라이드 ${index + 1}`).slice(0, 80));
       params.set("body", (slide.body || slide.content || "").slice(0, 260));
-      params.set("ratio", planAspectRatio);
+      const effectiveAspectRatio = options?.aspectRatio || planAspectRatio;
+      params.set("ratio", effectiveAspectRatio);
       params.set("index", String(index + 1));
-      if (selectedFestival?.imageUrl) {
-        params.set("bg", selectedFestival.imageUrl);
+      const backgroundImageUrl = options?.backgroundImageUrl || null;
+      if (backgroundImageUrl) {
+        params.set("bg", backgroundImageUrl);
       }
       return `${window.location.origin}/api/cardnews/slide-image?${params.toString()}`;
     },
-    [planAspectRatio, selectedFestival?.imageUrl],
+    [planAspectRatio],
   );
 
   const submitPublishing = useCallback(
-    async (mode: "now" | "schedule") => {
+    async (mode: "now" | "schedule", contentOverride?: ContentStudioPublishPayload) => {
+      const requestedFestivalTitle =
+        typeof contentOverride?.festivalTitle === "string" && contentOverride.festivalTitle.trim().length > 0
+          ? contentOverride.festivalTitle.trim()
+          : selectedFestival?.title || null;
+      const requestedFestivalId =
+        typeof contentOverride?.festivalId === "string" && contentOverride.festivalId.trim().length > 0
+          ? contentOverride.festivalId.trim()
+          : selectedFestival?.id || null;
+      const effectiveCaption = (
+        typeof contentOverride?.caption === "string" ? contentOverride.caption : captionText
+      ).trim();
+      const effectiveImageUrl = (
+        typeof contentOverride?.imageUrl === "string" && contentOverride.imageUrl.trim().length > 0
+          ? contentOverride.imageUrl
+          : selectedFestival?.imageUrl || ""
+      ).trim();
+      const effectiveBackgroundImageUrl = (
+        typeof contentOverride?.backgroundImageUrl === "string" && contentOverride.backgroundImageUrl.trim().length > 0
+          ? contentOverride.backgroundImageUrl
+          : ""
+      ).trim();
+      const effectiveAspectRatio = (
+        typeof contentOverride?.aspectRatio === "string" && contentOverride.aspectRatio.trim().length > 0
+          ? contentOverride.aspectRatio
+          : planAspectRatio
+      ).trim();
+      const effectiveSlides: Slide[] =
+        Array.isArray(contentOverride?.slides) && contentOverride.slides.length > 0
+          ? contentOverride.slides.map((slide, index) => ({
+              id: `publish-slide-${index + 1}`,
+              title: typeof slide?.title === "string" ? slide.title : `슬라이드 ${index + 1}`,
+              body:
+                typeof slide?.body === "string"
+                  ? slide.body
+                  : typeof slide?.content === "string"
+                    ? slide.content
+                    : "",
+              content: typeof slide?.content === "string" ? slide.content : "",
+              image: typeof slide?.image === "string" ? slide.image : undefined,
+              renderedImageUrl: typeof slide?.renderedImageUrl === "string" ? slide.renderedImageUrl : undefined,
+            }))
+          : generatedPlanSlides;
+
       const stageLabel = mode === "now" ? "즉시 게시" : "예약 게시";
       const reportUploadFailure = (message: string) => {
         setErrorMessage(message);
@@ -1815,7 +1879,7 @@ export default function InstagramAiPage() {
           kind: "upload",
           stage: stageLabel,
           message,
-          festivalTitle: selectedFestival?.title || null,
+          festivalTitle: requestedFestivalTitle,
         });
       };
 
@@ -1827,11 +1891,11 @@ export default function InstagramAiPage() {
         reportUploadFailure("인스타그램 계정 연결/전환은 사이드바의 연결 계정에서 설정해주세요.");
         return;
       }
-      if (!selectedFestival?.imageUrl) {
+      if (!effectiveImageUrl) {
         reportUploadFailure("게시에 사용할 포스터 이미지가 없는 행사입니다.");
         return;
       }
-      if (!captionText.trim()) {
+      if (!effectiveCaption) {
         reportUploadFailure("게시할 캡션을 입력해주세요.");
         return;
       }
@@ -1861,41 +1925,75 @@ export default function InstagramAiPage() {
 
       try {
         const headers = await buildAuthHeaders(true);
-        const reusableRenderedSlideUrls = !generatedPlanSlidesDirty
-          ? generatedPlanSlides
-              .map((slide) =>
-                typeof slide.renderedImageUrl === "string" && slide.renderedImageUrl.trim().length > 0
-                  ? slide.renderedImageUrl.trim()
-                  : null,
-              )
-              .filter((url): url is string => Boolean(url))
+        const desiredSlideCount = Math.min(Math.max(effectiveSlides.length, 0), 10);
+        const providedSlideImageUrls = Array.isArray(contentOverride?.slideImageUrls)
+          ? contentOverride.slideImageUrls
+              .map((url) => (typeof url === "string" ? url.trim() : ""))
+              .filter((url) => url.length > 0)
               .slice(0, 10)
           : [];
+        const renderedSlideUrlsFromSlides = effectiveSlides
+          .map((slide) =>
+            typeof slide.renderedImageUrl === "string" && slide.renderedImageUrl.trim().length > 0
+              ? slide.renderedImageUrl.trim()
+              : null,
+          )
+          .filter((url): url is string => Boolean(url))
+          .slice(0, 10);
+        const hasEnoughSlideUrls = (urls: string[]) => {
+          if (desiredSlideCount <= 1) return urls.length >= 1;
+          return urls.length >= desiredSlideCount;
+        };
+        const useExistingRenderedSlides = !contentOverride && !generatedPlanSlidesDirty;
+        const reusableRenderedSlideUrls = hasEnoughSlideUrls(providedSlideImageUrls)
+          ? providedSlideImageUrls
+          : useExistingRenderedSlides
+            ? (hasEnoughSlideUrls(renderedSlideUrlsFromSlides) ? renderedSlideUrlsFromSlides : [])
+            : [];
+        const shouldForceRenderedSlides = desiredSlideCount > 1;
         const fallbackSlideImageUrls = reusableRenderedSlideUrls.length > 0
           ? reusableRenderedSlideUrls
-          : generatedPlanSlides
+          : effectiveSlides
               .map((slide, index) => {
-                if (typeof slide.image === "string" && slide.image.trim().length > 0) {
-                  return slide.image.trim();
+                const directSlideImage =
+                  typeof slide.image === "string" && slide.image.trim().length > 0
+                    ? slide.image.trim()
+                    : null;
+                const renderedSlideImage = buildSlideRenderUrl(slide, index, {
+                  aspectRatio: effectiveAspectRatio,
+                  backgroundImageUrl:
+                    (typeof slide.image === "string" && slide.image.trim().length > 0
+                      ? slide.image.trim()
+                      : (effectiveBackgroundImageUrl || null)),
+                });
+                if (!shouldForceRenderedSlides && directSlideImage) {
+                  return directSlideImage;
                 }
-                return buildSlideRenderUrl(slide, index) || selectedFestival.imageUrl;
+                return renderedSlideImage || directSlideImage || effectiveImageUrl;
               })
               .filter((url): url is string => typeof url === "string" && url.trim().length > 0)
               .slice(0, 10);
+        const shouldIncludeSlidesPayload = effectiveSlides.length > 0 && (
+          reusableRenderedSlideUrls.length === 0
+          || reusableRenderedSlideUrls.length < desiredSlideCount
+        );
         const payload = {
-          caption: captionText.trim(),
-          imageUrl: selectedFestival.imageUrl,
+          caption: effectiveCaption,
+          imageUrl: effectiveImageUrl,
           slideImageUrls: fallbackSlideImageUrls,
-          slides: reusableRenderedSlideUrls.length > 0
-            ? undefined
-            : generatedPlanSlides.map((slide) => ({
+          slides: shouldIncludeSlidesPayload
+            ? effectiveSlides.map((slide) => ({
                 title: slide.title,
                 body: slide.body || slide.content || "",
-              })),
-          aspectRatio: planAspectRatio,
-          backgroundImageUrl: selectedFestival.imageUrl,
-          festivalId: selectedFestival.id,
-          festivalTitle: selectedFestival.title,
+                image: typeof slide.image === "string" && slide.image.trim().length > 0
+                  ? slide.image.trim()
+                  : undefined,
+              }))
+            : undefined,
+          aspectRatio: effectiveAspectRatio,
+          backgroundImageUrl: effectiveBackgroundImageUrl || undefined,
+          festivalId: requestedFestivalId,
+          festivalTitle: requestedFestivalTitle,
           mode: mode === "now" ? "publish" : "schedule",
           scheduledFor: scheduledForIso,
         };
@@ -1943,7 +2041,9 @@ export default function InstagramAiPage() {
       buildSlideRenderUrl,
       captionText,
       generatedPlanSlides,
+      generatedPlanSlidesDirty,
       isConnected,
+      planAspectRatio,
       registerFailureEvent,
       refreshAutomationData,
       scheduleAt,
@@ -2399,844 +2499,213 @@ export default function InstagramAiPage() {
         })}
       </div>
 
-      <div className="mb-8 flex flex-wrap items-center gap-2">
-        <button
-          onClick={() => setActiveTab("automation")}
-          className={cn(
-            "inline-flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-black transition-all",
-            activeTab === "automation"
-              ? "border-pink-600 bg-pink-600 text-white"
-              : "border-slate-200 bg-white text-slate-600 hover:border-slate-300",
-          )}
-        >
-          <Rocket className="h-4 w-4" />
-          자동 게시
-        </button>
-        <button
-          onClick={() => setActiveTab("studio")}
-          className={cn(
-            "inline-flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-black transition-all",
-            activeTab === "studio"
-              ? "border-slate-900 bg-slate-900 text-white"
-              : "border-slate-200 bg-white text-slate-600 hover:border-slate-300",
-          )}
-        >
-          <LayoutDashboard className="h-4 w-4" />
-          콘텐츠 스튜디오
-        </button>
-      </div>
+      <div className="space-y-6">
+        <ContentStudio
+          embedded
+          selectedCardnewsId={selectedSavedCardnewsId}
+          autoFestivalData={isAutoPlanRequest ? (autoPlanFestival ?? undefined) : undefined}
+          autoTrigger={isAutoPlanRequest}
+          autoCurationIds={isAutoCurationRequest ? autoCurationIds : []}
+          autoCurationTheme={isAutoCurationRequest ? autoCurationTheme : undefined}
+          autoCurationTrigger={isAutoCurationRequest}
+          onPublishNow={(payload) => submitPublishing("now", payload)}
+          onSaveToQueue={(payload) => submitPublishing("schedule", payload)}
+          isPublishingNow={isPublishingNow}
+          isScheduling={isScheduling}
+          authLoading={authLoading}
+        />
 
-      {activeTab === "automation" ? (
-        <div className="grid grid-cols-1 gap-7 xl:grid-cols-[minmax(0,1.08fr)_minmax(360px,0.92fr)]">
-          <div className="space-y-6">
-            <section className="rounded-[2rem] border border-slate-200 bg-white p-6 shadow-sm">
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                <div>
-                  <div className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-400">Posting Profile</div>
-                  <h2 className="mt-2 text-2xl font-black tracking-tight text-slate-900">게시 계정과 자동화 상태</h2>
-                  <p className="mt-2 text-sm font-bold leading-relaxed text-slate-500">
-                    인스타그램 계정 연결/추가는 사이드바의 연결 계정에서만 관리합니다.
-                  </p>
-                </div>
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                  {!isConnected && (
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-black text-slate-600">
-                      계정 연결은 사이드바에서 진행하세요.
-                    </div>
-                  )}
-                  {isConnected && (
-                    <button
-                      onClick={() => void refreshConnectionPreview({ showSuccessMessage: true })}
-                      disabled={pagesLoading}
-                      className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-                    >
-                      <RefreshCw className={cn("h-4 w-4", pagesLoading && "animate-spin")} />
-                      게시 계정 동기화
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              <div className="mt-6 grid gap-4 md:grid-cols-3">
-                <div className="rounded-[1.5rem] border border-slate-100 bg-slate-50 p-4">
-                  <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">연결 상태</div>
-                  <div className="mt-2 text-lg font-black text-slate-900">
-                    {isConnected ? "연결됨" : "미연결"}
-                  </div>
-                </div>
-                <div className="rounded-[1.5rem] border border-slate-100 bg-slate-50 p-4">
-                  <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">연결 계정</div>
-                  <div className="mt-2 text-lg font-black text-slate-900">{connectedAccountLabel}</div>
-                  <div className="mt-1 text-xs font-bold text-slate-400">{connectedAccountMeta}</div>
-                  {isConnected && accounts.length > 1 && (
-                    <div className="mt-3">
-                      <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">계정 전환</div>
-                      <select
-                        value={activeAccountId || ""}
-                        onChange={(event) => void setActiveAccount(event.target.value)}
-                        disabled={accountsLoading || !activeAccountId}
-                        className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 disabled:opacity-60"
-                      >
-                        {accounts.map((account) => (
-                          <option key={account.id} value={account.id}>
-                            {account.igUsername ? `@${account.igUsername}` : account.pageName || account.id}
-                          </option>
-                        ))}
-                      </select>
-                      <div className="mt-2 text-[11px] font-bold text-slate-400">
-                        연결된 계정 {accounts.length}개
-                      </div>
-                    </div>
-                  )}
-                </div>
-                <div className="rounded-[1.5rem] border border-slate-100 bg-slate-50 p-4">
-                  <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">다음 예약</div>
-                  <div className="mt-2 text-lg font-black text-slate-900">{scheduledPreviewLabel}</div>
-                  <div className="mt-1 text-xs font-bold text-slate-400">현재 입력값 기준</div>
-                </div>
-              </div>
-
-              {(connectMessage || pagesError || accountsError) && (
-                <div className="mt-4 space-y-1">
-                  {connectMessage && <div className="text-xs font-black text-pink-600">{connectMessage}</div>}
-                  {pagesError && <div className="text-xs font-black text-rose-500">{pagesError}</div>}
-                  {accountsError && <div className="text-xs font-black text-rose-500">{accountsError}</div>}
+        {/* 게시 계정과 자동화 상태 */}
+        <section className="rounded-[2rem] border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <div className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-400">Posting Profile</div>
+              <h2 className="mt-2 text-2xl font-black tracking-tight text-slate-900">게시 계정과 자동화 상태</h2>
+              <p className="mt-2 text-sm font-bold leading-relaxed text-slate-500">
+                인스타그램 계정 연결/추가는 사이드바의 연결 계정에서만 관리합니다.
+              </p>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              {!isConnected && (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-black text-slate-600">
+                  계정 연결은 사이드바에서 진행하세요.
                 </div>
               )}
-
-              <div className="mt-6 rounded-[1.5rem] border border-slate-100 bg-slate-50 p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">최근 게시물</div>
-                    <div className="mt-1 text-sm font-black text-slate-900">연결 계정의 최신 게시물 2개</div>
-                  </div>
-                  {isConnected && (
-                    <button
-                      onClick={() => void fetchRecentPosts()}
-                      disabled={recentPostsLoading}
-                      className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] font-black text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-                    >
-                      <RefreshCw className={cn("h-3.5 w-3.5", recentPostsLoading && "animate-spin")} />
-                      갱신
-                    </button>
-                  )}
-                </div>
-
-                {!isConnected && (
-                  <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-center text-xs font-bold text-slate-400">
-                    계정을 연결하면 최근 게시물 2개가 여기에 표시됩니다.
-                  </div>
-                )}
-
-                {isConnected && recentPostsLoading && (
-                  <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-6 text-center text-xs font-bold text-slate-400">
-                    최근 게시물을 불러오는 중입니다...
-                  </div>
-                )}
-
-                {isConnected && !recentPostsLoading && recentPosts.length === 0 && (
-                  <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-center text-xs font-bold text-slate-400">
-                    표시할 최근 게시물이 없습니다.
-                  </div>
-                )}
-
-                {isConnected && !recentPostsLoading && recentPosts.length > 0 && (
-                  <div className="mt-4 grid gap-3 md:grid-cols-2">
-                    {recentPosts.map((post) => (
-                      <article key={post.id} className="overflow-hidden rounded-[1.25rem] border border-slate-200 bg-white">
-                        <div className="aspect-[4/3] bg-slate-100">
-                          {post.previewUrl ? (
-                            <img src={post.previewUrl} alt="" className="h-full w-full object-cover" />
-                          ) : (
-                            <div className="flex h-full items-center justify-center text-xs font-black text-slate-400">
-                              미리보기 없음
-                            </div>
-                          )}
-                        </div>
-                        <div className="p-4">
-                          <div className="line-clamp-2 text-sm font-black text-slate-900">
-                            {post.caption || "캡션 없는 게시물"}
-                          </div>
-                          <div className="mt-2 text-[11px] font-bold text-slate-400">{formatDateTime(post.timestamp)}</div>
-                          {post.permalink && (
-                            <a
-                              href={post.permalink}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="mt-3 inline-flex items-center gap-1 text-xs font-black text-pink-600 hover:text-pink-700"
-                            >
-                              게시물 보기
-                              <ExternalLink className="h-3.5 w-3.5" />
-                            </a>
-                          )}
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </section>
-
-            <section className="rounded-[2rem] border border-slate-200 bg-white p-6 shadow-sm">
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-                <div>
-                  <div className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-400">Auto Publishing</div>
-                  <h2 className="mt-2 text-2xl font-black tracking-tight text-slate-900">행사 포스터 자동 게시</h2>
-                  <p className="mt-2 text-sm font-bold text-slate-500">
-                    현재 자동 게시 기능은 선택한 행사 포스터 이미지를 단일 피드 게시물로 올립니다.
-                  </p>
-                </div>
-                <Link
-                  href="/schedule"
-                  className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-black text-slate-700 hover:bg-slate-100"
+              {isConnected && (
+                <button
+                  onClick={() => void refreshConnectionPreview({ showSuccessMessage: true })}
+                  disabled={pagesLoading}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-60"
                 >
-                  <CalendarPlus2 className="h-4 w-4" />
-                  예약 캘린더 보기
-                </Link>
-              </div>
+                  <RefreshCw className={cn("h-4 w-4", pagesLoading && "animate-spin")} />
+                  게시 계정 동기화
+                </button>
+              )}
+            </div>
+          </div>
 
-              <div className="mt-6 grid gap-5 xl:grid-cols-[minmax(280px,340px)_minmax(0,1fr)]">
-                <div className="rounded-[1.75rem] border border-slate-100 bg-[linear-gradient(180deg,#fff8fb_0%,#ffffff_100%)] p-5">
-                  <label className="mb-2 block text-[10px] font-black uppercase tracking-widest text-slate-400">
-                    행사 선택
-                  </label>
+          <div className="mt-6 grid gap-4 md:grid-cols-3">
+            <div className="rounded-[1.5rem] border border-slate-100 bg-slate-50 p-4">
+              <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">연결 상태</div>
+              <div className="mt-2 text-lg font-black text-slate-900">{isConnected ? "연결됨" : "미연결"}</div>
+            </div>
+            <div className="rounded-[1.5rem] border border-slate-100 bg-slate-50 p-4">
+              <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">연결 계정</div>
+              <div className="mt-2 text-lg font-black text-slate-900">{connectedAccountLabel}</div>
+              <div className="mt-1 text-xs font-bold text-slate-400">{connectedAccountMeta}</div>
+              {isConnected && accounts.length > 1 && (
+                <div className="mt-3">
+                  <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">계정 전환</div>
                   <select
-                    value={selectedFestivalId}
-                    onChange={(event) => {
-                      setSelectedFestivalId(event.target.value);
-                      setFeedbackMessage(null);
-                      setErrorMessage(null);
-                    }}
-                    className="w-full rounded-2xl border-2 border-slate-100 bg-white px-4 py-3 text-sm font-black text-slate-900 outline-none transition-all focus:border-pink-200"
-                    disabled={festivalsLoading}
+                    value={activeAccountId || ""}
+                    onChange={(event) => void setActiveAccount(event.target.value)}
+                    disabled={accountsLoading || !activeAccountId}
+                    className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 disabled:opacity-60"
                   >
-                    {festivalsLoading && <option>행사 로딩 중...</option>}
-                    {!festivalsLoading && festivals.length === 0 && <option>표시할 행사가 없습니다.</option>}
-                    {festivals.map((festival) => (
-                      <option key={festival.id} value={festival.id}>
-                        {festival.title}
+                    {accounts.map((account) => (
+                      <option key={account.id} value={account.id}>
+                        {account.igUsername ? `@${account.igUsername}` : account.pageName || account.id}
                       </option>
                     ))}
                   </select>
+                  <div className="mt-2 text-[11px] font-bold text-slate-400">연결된 계정 {accounts.length}개</div>
+                </div>
+              )}
+            </div>
+            <div className="rounded-[1.5rem] border border-slate-100 bg-slate-50 p-4">
+              <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">다음 예약</div>
+              <div className="mt-2 text-lg font-black text-slate-900">{scheduledPreviewLabel}</div>
+              <div className="mt-1 text-xs font-bold text-slate-400">현재 입력값 기준</div>
+            </div>
+          </div>
 
-                  <div className="mt-5 overflow-hidden rounded-[1.5rem] border border-slate-100 bg-white">
-                    <div className="aspect-[4/5] bg-slate-100">
-                      {selectedFestival?.imageUrl ? (
-                        <img
-                          src={selectedFestival.imageUrl}
-                          alt={selectedFestival.title}
-                          className="h-full w-full object-cover"
-                        />
+          {(connectMessage || pagesError || accountsError) && (
+            <div className="mt-4 space-y-1">
+              {connectMessage && <div className="text-xs font-black text-pink-600">{connectMessage}</div>}
+              {pagesError && <div className="text-xs font-black text-rose-500">{pagesError}</div>}
+              {accountsError && <div className="text-xs font-black text-rose-500">{accountsError}</div>}
+            </div>
+          )}
+
+          <div className="mt-6 rounded-[1.5rem] border border-slate-100 bg-slate-50 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">최근 게시물</div>
+                <div className="mt-1 text-sm font-black text-slate-900">연결 계정의 최신 게시물 2개</div>
+              </div>
+              {isConnected && (
+                <button
+                  onClick={() => void fetchRecentPosts()}
+                  disabled={recentPostsLoading}
+                  className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] font-black text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                >
+                  <RefreshCw className={cn("h-3.5 w-3.5", recentPostsLoading && "animate-spin")} />
+                  갱신
+                </button>
+              )}
+            </div>
+            {!isConnected && (
+              <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-center text-xs font-bold text-slate-400">
+                계정을 연결하면 최근 게시물 2개가 여기에 표시됩니다.
+              </div>
+            )}
+            {isConnected && recentPostsLoading && (
+              <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-6 text-center text-xs font-bold text-slate-400">
+                최근 게시물을 불러오는 중입니다...
+              </div>
+            )}
+            {isConnected && !recentPostsLoading && recentPosts.length === 0 && (
+              <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-center text-xs font-bold text-slate-400">
+                표시할 최근 게시물이 없습니다.
+              </div>
+            )}
+            {isConnected && !recentPostsLoading && recentPosts.length > 0 && (
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                {recentPosts.map((post) => (
+                  <article key={post.id} className="overflow-hidden rounded-[1.25rem] border border-slate-200 bg-white">
+                    <div className="aspect-[4/3] bg-slate-100">
+                      {post.previewUrl ? (
+                        <img src={post.previewUrl} alt="" className="h-full w-full object-cover" />
                       ) : (
-                        <div className="flex h-full items-center justify-center text-xs font-black text-slate-400">
-                          사용할 포스터 이미지가 없습니다.
-                        </div>
+                        <div className="flex h-full items-center justify-center text-xs font-black text-slate-400">미리보기 없음</div>
                       )}
                     </div>
                     <div className="p-4">
-                      <div className="text-sm font-black text-slate-900">{selectedFestival?.title || "행사를 선택해주세요."}</div>
-                      <div className="mt-2 text-xs font-bold leading-relaxed text-slate-500">
-                        {selectedFestival
-                          ? `${selectedFestival.startDate} - ${selectedFestival.endDate} · ${selectedFestival.location}`
-                          : "선택한 행사 정보가 여기에 표시됩니다."}
-                      </div>
-                      {selectedFestival?.sourceUrl && (
+                      <div className="line-clamp-2 text-sm font-black text-slate-900">{post.caption || "캡션 없는 게시물"}</div>
+                      <div className="mt-2 text-[11px] font-bold text-slate-400">{formatDateTime(post.timestamp)}</div>
+                      {post.permalink && (
                         <a
-                          href={selectedFestival.sourceUrl}
+                          href={post.permalink}
                           target="_blank"
                           rel="noreferrer"
                           className="mt-3 inline-flex items-center gap-1 text-xs font-black text-pink-600 hover:text-pink-700"
                         >
-                          원문 보기
-                          <ExternalLink className="h-3.5 w-3.5" />
+                          게시물 보기 <ExternalLink className="h-3.5 w-3.5" />
                         </a>
                       )}
                     </div>
-                  </div>
-
-                  <div className="mt-5 rounded-[1.5rem] border border-slate-100 bg-white p-4">
-                    <div className="mb-3 text-[10px] font-black uppercase tracking-widest text-slate-400">기획안 설정</div>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div>
-                        <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-400">앵글 선택</label>
-                        <select
-                          value={planStyle}
-                          onChange={(event) => setPlanStyle(event.target.value)}
-                          className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 outline-none focus:border-pink-300"
-                        >
-                          {PLAN_STYLE_OPTIONS.map((option) => (
-                            <option key={option} value={option}>
-                              {option}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-[10px] font-black uppercase tracking-widest text-slate-400">타겟 독자</label>
-                        <select
-                          value={planTarget}
-                          onChange={(event) => setPlanTarget(event.target.value)}
-                          className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 outline-none focus:border-pink-300"
-                        >
-                          {PLAN_TARGET_OPTIONS.map((option) => (
-                            <option key={option} value={option}>
-                              {option}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-
-                    <div className="mt-3">
-                      <label className="mb-2 block text-[10px] font-black uppercase tracking-widest text-slate-400">카드 비율</label>
-                      <div className="grid grid-cols-3 gap-2">
-                        {PLAN_ASPECT_RATIOS.map((ratio) => (
-                          <button
-                            key={ratio}
-                            type="button"
-                            onClick={() => setPlanAspectRatio(ratio)}
-                            className={cn(
-                              "rounded-xl border px-3 py-2 text-[11px] font-black transition-all",
-                              planAspectRatio === ratio
-                                ? "border-slate-900 bg-slate-900 text-white"
-                                : "border-slate-200 bg-white text-slate-600 hover:border-slate-300",
-                            )}
-                          >
-                            {ratio}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="mt-3">
-                      <div className="mb-2 flex items-center justify-between">
-                        <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">슬라이드 개수</label>
-                        <span className="text-xs font-black text-pink-600">{planSlideCount}장</span>
-                      </div>
-                      <input
-                        type="range"
-                        min="1"
-                        max="10"
-                        step="1"
-                        value={planSlideCount}
-                        onChange={(event) => setPlanSlideCount(Number.parseInt(event.target.value, 10))}
-                        className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-200 accent-[#E91E63]"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="mt-5 rounded-[1.5rem] border border-slate-100 bg-white p-4">
-                    <label className="mb-2 block text-[10px] font-black uppercase tracking-widest text-slate-400">
-                      예약 시각
-                    </label>
-                    <input
-                      type="datetime-local"
-                      value={scheduleAt}
-                      onChange={(event) => setScheduleAt(event.target.value)}
-                      className="w-full rounded-2xl border-2 border-slate-100 bg-white px-4 py-3 text-sm font-black text-slate-900 outline-none transition-all focus:border-pink-200"
-                    />
-                    <div className="mt-2 text-[11px] font-bold leading-relaxed text-slate-400">
-                      브라우저의 현지 시간대로 입력되며 서버에는 ISO 기준으로 저장됩니다.
-                    </div>
-                  </div>
-                </div>
-
-                <CaptionEditor
-                  text={captionText}
-                  onTextChange={setCaptionText}
-                  tone={captionTone}
-                  onToneChange={setCaptionTone}
-                  styleMode={captionStyle}
-                  onStyleModeChange={setCaptionStyle}
-                  onGenerateCaption={handleGeneratePlanAndCaption}
-                  isGeneratingCaption={isPlanGenerating}
-                  quickGenerateLabel="기획안+캡션 생성하기"
-                  generateButtonLabel="기획안+캡션 생성하기"
-                  generateButtonLoadingLabel="기획안+캡션 생성 중..."
-                  showQuickGenerateButton={false}
-                  customStylePanelLabel="추천 앵글 선택"
-                  customStylePanel={angleSelectorPanel}
-                  embedded
-                  compact
-                  className="min-h-[620px]"
-                />
+                  </article>
+                ))}
               </div>
-
-              {(feedbackMessage || errorMessage || stickyErrorMessage || latestResearchReport) && (
-                <div className="mt-5 space-y-2">
-                  {errorMessage && (
-                    <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700">
-                      {errorMessage}
-                    </div>
-                  )}
-                  {!errorMessage && feedbackMessage && (
-                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-700">
-                      {feedbackMessage}
-                    </div>
-                  )}
-                  {!errorMessage && stickyErrorMessage && (
-                    <div className="flex items-start justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-700">
-                      <span>최근 오류: {stickyErrorMessage}</span>
-                      <button
-                        type="button"
-                        onClick={() => setStickyErrorMessage(null)}
-                        className="shrink-0 rounded-lg border border-amber-200 bg-white px-2 py-1 text-[11px] font-black text-amber-700 hover:bg-amber-100"
-                      >
-                        닫기
-                      </button>
-                    </div>
-                  )}
-                  {latestResearchReport && (
-                    <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                      <button
-                        type="button"
-                        onClick={() => setIsResearchReportOpen((prev) => !prev)}
-                        className="flex w-full items-start justify-between gap-4 text-left"
-                      >
-                        <div>
-                          <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">AI 조사 결과</div>
-                          <div className="mt-1 text-sm font-black text-slate-900">{latestResearchReport.festivalTitle}</div>
-                          <div className="mt-1 text-xs font-bold text-slate-500">
-                            조사 시각 {formatDateTime(latestResearchReport.searchedAt)}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={cn(
-                              "rounded-full border px-2.5 py-1 text-[10px] font-black",
-                              RESEARCH_STATUS_TONE[latestResearchReport.status],
-                            )}
-                          >
-                            {RESEARCH_STATUS_LABEL[latestResearchReport.status]}
-                          </span>
-                          {isResearchReportOpen ? (
-                            <ChevronUp className="h-4 w-4 text-slate-400" />
-                          ) : (
-                            <ChevronDown className="h-4 w-4 text-slate-400" />
-                          )}
-                        </div>
-                      </button>
-
-                      {isResearchReportOpen && (
-                        <div className="mt-4 space-y-3 border-t border-slate-100 pt-3">
-                          <div className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-700">
-                            {latestResearchReport.message}
-                          </div>
-                          {latestResearchReport.updatedFields.length > 0 && (
-                            <div className="text-xs font-bold text-emerald-700">
-                              반영된 항목: {latestResearchReport.updatedFields.map((field) => RESEARCH_FIELD_LABEL[field] || field).join(", ")}
-                            </div>
-                          )}
-                          {!latestResearchReport.researched && (
-                            <div className="text-xs font-bold text-slate-500">
-                              이번 조사에서 확보된 추가 텍스트 정보가 없습니다.
-                            </div>
-                          )}
-                          {latestResearchReport.researched && (
-                            <div className="grid gap-2 sm:grid-cols-2">
-                              {(latestResearchReport.researched.performanceSchedule
-                                || latestResearchReport.researched.startDate
-                                || latestResearchReport.researched.endDate) && (
-                                <div className="rounded-xl border border-slate-100 bg-white px-3 py-2 text-xs font-bold text-slate-700">
-                                  공연 일정: {latestResearchReport.researched.performanceSchedule
-                                    || `${latestResearchReport.researched.startDate || "-"} ~ ${latestResearchReport.researched.endDate || "-"}`}
-                                </div>
-                              )}
-                              {(latestResearchReport.researched.venue || latestResearchReport.researched.location) && (
-                                <div className="rounded-xl border border-slate-100 bg-white px-3 py-2 text-xs font-bold text-slate-700">
-                                  공연 장소: {latestResearchReport.researched.venue || latestResearchReport.researched.location}
-                                </div>
-                              )}
-                              {latestResearchReport.researched.lineup && (
-                                <div className="rounded-xl border border-slate-100 bg-white px-3 py-2 text-xs font-bold text-slate-700">
-                                  라인업: {latestResearchReport.researched.lineup}
-                                </div>
-                              )}
-                              {(latestResearchReport.researched.ticketPrice || latestResearchReport.researched.price) && (
-                                <div className="rounded-xl border border-slate-100 bg-white px-3 py-2 text-xs font-bold text-slate-700">
-                                  티켓 가격: {latestResearchReport.researched.ticketPrice || latestResearchReport.researched.price}
-                                </div>
-                              )}
-                              {(() => {
-                                const bookingSite = latestResearchReport.researched.bookingSite || latestResearchReport.researched.homepage;
-                                if (!bookingSite) return null;
-                                if (/^https?:\/\//i.test(bookingSite)) {
-                                  return (
-                                    <a
-                                      href={bookingSite}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                      className="inline-flex items-center gap-1 rounded-xl border border-slate-100 bg-white px-3 py-2 text-xs font-bold text-pink-600 hover:text-pink-700"
-                                    >
-                                      예매처 확인
-                                      <ExternalLink className="h-3.5 w-3.5" />
-                                    </a>
-                                  );
-                                }
-                                return (
-                                  <div className="rounded-xl border border-slate-100 bg-white px-3 py-2 text-xs font-bold text-slate-700">
-                                    예매처: {bookingSite}
-                                  </div>
-                                );
-                              })()}
-                              {latestResearchReport.researched.homepage
-                                && latestResearchReport.researched.homepage !== latestResearchReport.researched.bookingSite
-                                && /^https?:\/\//i.test(latestResearchReport.researched.homepage) && (
-                                  <a
-                                    href={latestResearchReport.researched.homepage}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="inline-flex items-center gap-1 rounded-xl border border-slate-100 bg-white px-3 py-2 text-xs font-bold text-sky-600 hover:text-sky-700"
-                                  >
-                                    공식 홈페이지
-                                    <ExternalLink className="h-3.5 w-3.5" />
-                                  </a>
-                                )}
-                              {latestResearchReport.researched.sourceUrl && (
-                                <a
-                                  href={latestResearchReport.researched.sourceUrl}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="inline-flex items-center gap-1 rounded-xl border border-slate-100 bg-white px-3 py-2 text-xs font-bold text-sky-600 hover:text-sky-700"
-                                >
-                                  조사 원문 보기
-                                  <ExternalLink className="h-3.5 w-3.5" />
-                                </a>
-                              )}
-                              {latestResearchReport.researched.description && (
-                                <div className="sm:col-span-2 rounded-xl border border-slate-100 bg-white px-3 py-2 text-xs font-bold leading-relaxed text-slate-700">
-                                  조사 요약: {latestResearchReport.researched.description}
-                                </div>
-                              )}
-                              {Array.isArray(latestResearchReport.researched.details) && latestResearchReport.researched.details.length > 0 && (
-                                <div className="sm:col-span-2 rounded-xl border border-slate-100 bg-white px-3 py-2">
-                                  <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">추출된 상세 정보</div>
-                                  <div className="mt-1 space-y-1 text-xs font-bold text-slate-700">
-                                    {latestResearchReport.researched.details.map((detail) => (
-                                      <div key={`${detail.label}-${detail.value}`}>{detail.label}: {detail.value}</div>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              <div className="mt-6 flex flex-col gap-3 md:flex-row">
-                <button
-                  onClick={() => void submitPublishing("now")}
-                  disabled={authLoading || isPublishingNow || isScheduling}
-                  className="inline-flex flex-1 items-center justify-center gap-2 rounded-[1.25rem] bg-pink-600 px-5 py-4 text-sm font-black text-white shadow-lg shadow-pink-200 transition-all hover:bg-pink-700 disabled:opacity-50"
-                >
-                  {isPublishingNow ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
-                  지금 인스타그램에 게시
-                </button>
-                <button
-                  onClick={() => void submitPublishing("schedule")}
-                  disabled={authLoading || isScheduling || isPublishingNow}
-                  className="inline-flex flex-1 items-center justify-center gap-2 rounded-[1.25rem] border border-slate-200 bg-white px-5 py-4 text-sm font-black text-slate-700 transition-all hover:bg-slate-50 disabled:opacity-50"
-                >
-                  {isScheduling ? <RefreshCw className="h-4 w-4 animate-spin" /> : <CalendarClock className="h-4 w-4" />}
-                  예약 큐에 저장
-                </button>
-              </div>
-            </section>
-          </div>
-
-          <div className="space-y-6">
-            <section className="rounded-[2rem] border border-slate-200 bg-white p-6 shadow-sm">
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <div className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-400">Publishing Queue</div>
-                  <h2 className="mt-2 text-2xl font-black tracking-tight text-slate-900">게시·예약 내역</h2>
-                </div>
-                <button
-                  onClick={() => void refreshAutomationData()}
-                  className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-xs font-black text-slate-700 hover:bg-slate-100"
-                >
-                  <RefreshCw className="h-4 w-4" />
-                  갱신
-                </button>
-              </div>
-
-              <div className="mt-5 grid grid-cols-2 gap-3">
-                <div className="rounded-[1.4rem] border border-slate-100 bg-slate-50 p-4">
-                  <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">예약 중</div>
-                  <div className="mt-2 text-xl font-black text-slate-900">{queueCounts.scheduled}</div>
-                </div>
-                <div className="rounded-[1.4rem] border border-slate-100 bg-slate-50 p-4">
-                  <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">발행 완료</div>
-                  <div className="mt-2 text-xl font-black text-slate-900">{queueCounts.published}</div>
-                </div>
-              </div>
-
-              {latestPublished && (
-                <div className="mt-5 rounded-[1.6rem] border border-emerald-100 bg-emerald-50/70 p-4">
-                  <div className="text-[10px] font-black uppercase tracking-widest text-emerald-600">Latest Success</div>
-                  <div className="mt-2 text-sm font-black text-slate-900">{latestPublished.festivalTitle || "최근 게시 완료"}</div>
-                  <div className="mt-1 text-xs font-bold text-slate-500">{formatDateTime(latestPublished.publishedAt)}</div>
-                  {latestPublished.permalink && (
-                    <a
-                      href={latestPublished.permalink}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="mt-3 inline-flex items-center gap-1 text-xs font-black text-emerald-700 hover:text-emerald-800"
-                    >
-                      게시물 열기
-                      <ExternalLink className="h-3.5 w-3.5" />
-                    </a>
-                  )}
-                </div>
-              )}
-
-              <div className="mt-5 flex flex-col gap-3 rounded-[1.6rem] border border-slate-100 bg-white p-4">
-                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                  <div className="flex flex-wrap items-center gap-2">
-                    {(
-                      [
-                        { value: "all" as const, label: "전체" },
-                        { value: "scheduled" as const, label: "예약" },
-                        { value: "published" as const, label: "게시 완료" },
-                        { value: "failed" as const, label: "실패" },
-                        { value: "in-progress" as const, label: "진행/대기" },
-                      ] satisfies { value: QueueStatusFilter; label: string }[]
-                    ).map((option) => (
-                      <button
-                        key={option.value}
-                        onClick={() => {
-                          setQueueStatusFilter(option.value);
-                          setQueuePage(1);
-                          void fetchQueue({
-                            page: 1,
-                            status: option.value,
-                            mode: queueModeFilter,
-                          });
-                        }}
-                        className={cn(
-                          "rounded-full border px-4 py-2 text-xs font-black transition-all",
-                          queueStatusFilter === option.value
-                            ? "border-slate-900 bg-slate-900 text-white"
-                            : "border-slate-200 bg-white text-slate-600 hover:border-slate-300",
-                        )}
-                      >
-                        {option.label}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="flex items-center justify-between gap-2 md:justify-end">
-                    <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">유형</div>
-                    <select
-                      value={queueModeFilter}
-                      onChange={(event) => {
-                        const nextMode = event.target.value as QueueModeFilter;
-                        setQueueModeFilter(nextMode);
-                        setQueuePage(1);
-                        void fetchQueue({
-                          page: 1,
-                          status: queueStatusFilter,
-                          mode: nextMode,
-                        });
-                      }}
-                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 outline-none transition-all focus:border-pink-300"
-                    >
-                      <option value="all">전체</option>
-                      <option value="scheduled">예약 게시</option>
-                      <option value="now">즉시 게시</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="text-xs font-bold text-slate-400">
-                  총 {queuePagination.total.toLocaleString("ko-KR")}개 · {queuePagination.page}/{queuePagination.totalPages} 페이지 · 페이지당 {queuePagination.pageSize}개
-                </div>
-              </div>
-
-              <div className="mt-5 space-y-3">
-                {queueLoading && (
-                  <div className="rounded-[1.4rem] border border-slate-100 bg-slate-50 px-4 py-6 text-center text-sm font-bold text-slate-400">
-                    내역을 불러오는 중입니다...
-                  </div>
-                )}
-
-                {!queueLoading && queue.length === 0 && (
-                  <div className="rounded-[1.4rem] border border-dashed border-slate-200 px-4 py-8 text-center text-sm font-bold text-slate-400">
-                    아직 게시 또는 예약된 항목이 없습니다.
-                  </div>
-                )}
-
-                {!queueLoading &&
-                  queue.length > 0 &&
-                  queuePagination.total === 0 && (
-                    <div className="rounded-[1.4rem] border border-dashed border-slate-200 px-4 py-8 text-center text-sm font-bold text-slate-400">
-                      필터 조건에 맞는 내역이 없습니다.
-                    </div>
-                  )}
-
-                {!queueLoading &&
-                  queue.map((item) => (
-                    <article key={item.id} className="rounded-[1.5rem] border border-slate-100 bg-slate-50 p-4">
-                      <div className="flex items-start gap-4">
-                        <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-white">
-                          {item.imageUrl ? (
-                            <img src={item.imageUrl} alt="" className="h-full w-full object-cover" />
-                          ) : (
-                            <ImageIcon className="h-5 w-5 text-slate-300" />
-                          )}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className={cn("rounded-full px-2.5 py-1 text-[10px] font-black", statusToneMap[item.status])}>
-                              {statusLabelMap[item.status]}
-                            </span>
-                            <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">
-                              {item.publishMode === "scheduled" ? "예약 게시" : "즉시 게시"}
-                            </span>
-                          </div>
-                          <div className="mt-2 truncate text-sm font-black text-slate-900">
-                            {item.festivalTitle || "제목 없는 게시물"}
-                          </div>
-                          <div className="mt-1 text-xs font-bold leading-relaxed text-slate-500">
-                            {item.scheduledFor
-                              ? `예약 시각 ${formatDateTime(item.scheduledFor)}`
-                              : item.publishedAt
-                                ? `게시 완료 ${formatDateTime(item.publishedAt)}`
-                                : `생성됨 ${formatDateTime(item.createdAt)}`}
-                          </div>
-                          {item.lastError && (
-                            <div className="mt-2 text-xs font-bold text-rose-500">{item.lastError}</div>
-                          )}
-                          {(item.status === "scheduled" || item.status === "queued") && (
-                            <button
-                              onClick={() => void handleCancelScheduledPost(item.id)}
-                              disabled={cancelingQueueId === item.id}
-                              className="mt-3 inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-[11px] font-black text-rose-600 hover:bg-rose-100 disabled:opacity-60"
-                            >
-                              <XCircle className="h-3.5 w-3.5" />
-                              {cancelingQueueId === item.id ? "취소 중..." : "예약 취소"}
-                            </button>
-                          )}
-                          {item.permalink && (
-                            <a
-                              href={item.permalink}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="mt-3 inline-flex items-center gap-1 text-xs font-black text-pink-600 hover:text-pink-700"
-                            >
-                              인스타 게시물 열기
-                              <ExternalLink className="h-3.5 w-3.5" />
-                            </a>
-                          )}
-                        </div>
-                      </div>
-                    </article>
-                  ))}
-              </div>
-
-              {!queueLoading && queuePagination.total > 0 && (
-                <div className="mt-5 flex items-center justify-between">
-                  <button
-                    onClick={() => {
-                      const nextPage = Math.max(1, queuePagination.page - 1);
-                      setQueuePage(nextPage);
-                      void fetchQueue({
-                        page: nextPage,
-                        status: queueStatusFilter,
-                        mode: queueModeFilter,
-                      });
-                    }}
-                    disabled={queuePagination.page <= 1}
-                    className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-black text-slate-600 hover:bg-slate-50 disabled:opacity-40"
-                  >
-                    이전
-                  </button>
-                  <button
-                    onClick={() => {
-                      const nextPage = Math.min(queuePagination.totalPages, queuePagination.page + 1);
-                      setQueuePage(nextPage);
-                      void fetchQueue({
-                        page: nextPage,
-                        status: queueStatusFilter,
-                        mode: queueModeFilter,
-                      });
-                    }}
-                    disabled={queuePagination.page >= queuePagination.totalPages}
-                    className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-black text-slate-600 hover:bg-slate-50 disabled:opacity-40"
-                  >
-                    다음
-                  </button>
-                </div>
-              )}
-            </section>
-
-            {generatedPlanSlides.length > 0 && (
-              <section className="rounded-[2rem] border border-slate-200 bg-white p-6 shadow-sm">
-                <div className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-400">Cardnews Preview</div>
-                <h2 className="mt-2 text-xl font-black text-slate-900">카드뉴스 미리보기</h2>
-                <p className="mt-2 text-sm font-bold text-slate-500">
-                  기획안 생성 결과를 인스타 피드 형태로 바로 확인할 수 있습니다.
-                </p>
-                <div className="mt-5">
-                  <CarouselPreview
-                    slides={generatedPlanSlides}
-                    aspectRatio={planAspectRatio}
-                    caption={captionText}
-                    accountName={previewAccountName}
-                    accountLocation={connectedAccountMeta}
-                  />
-                </div>
-                <div className="mt-6 rounded-[1.5rem] border border-slate-100 bg-slate-50 p-4">
-                  <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">기획안 편집</div>
-                  <div className="mt-3 space-y-3">
-                    {generatedPlanSlides.map((slide, index) => (
-                      <div key={slide.id || `editable-slide-${index + 1}`} className="rounded-xl border border-slate-200 bg-white p-3">
-                        <div className="mb-2 text-[11px] font-black text-slate-400">슬라이드 {index + 1}</div>
-                        <input
-                          value={slide.title}
-                          onChange={(event) => updateGeneratedPlanSlide(index, "title", event.target.value)}
-                          placeholder="슬라이드 제목"
-                          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-black text-slate-800 outline-none focus:border-pink-300"
-                        />
-                        <textarea
-                          value={slide.body || slide.content || ""}
-                          onChange={(event) => updateGeneratedPlanSlide(index, "body", event.target.value)}
-                          placeholder="슬라이드 본문"
-                          className="mt-2 h-20 w-full resize-none rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold leading-relaxed text-slate-700 outline-none focus:border-pink-300"
-                        />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </section>
             )}
-
-            <section className="rounded-[2rem] border border-slate-200 bg-white p-6 shadow-sm">
-              <div className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-400">Operational Note</div>
-              <h2 className="mt-2 text-xl font-black text-slate-900">현재 자동 게시 방식</h2>
-              <div className="mt-4 space-y-3 text-sm font-bold leading-relaxed text-slate-500">
-                <p>현재 자동 게시 기능은 선택한 행사 포스터 이미지를 단일 피드 게시물로 업로드합니다.</p>
-                <p>대시보드의 카드뉴스 슬라이드 데이터는 아직 이미지 렌더링 파이프라인이 없어서 인스타 API로 바로 전송되지는 않습니다.</p>
-                <p>카드뉴스를 실제 이미지로 내보내는 단계가 연결되면 이 페이지에서도 멀티 슬라이드 자동 게시로 확장할 수 있습니다.</p>
-              </div>
-            </section>
           </div>
-        </div>
-      ) : (
-        <div className="space-y-6">
-          <ContentStudio embedded selectedCardnewsId={selectedSavedCardnewsId} />
-          <SavedContentBoard
-            title="저장된 콘텐츠"
-            pageSize={10}
-            selectedItemId={selectedSavedCardnewsId}
-            onSelectItem={(item) => setSelectedSavedCardnewsId(item.id)}
-          />
-        </div>
-      )}
+
+        </section>
+
+        {/* 게시·예약 내역 */}
+        <section className="rounded-[2rem] border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-400">Publishing Queue</div>
+              <h2 className="mt-2 text-2xl font-black tracking-tight text-slate-900">게시·예약 내역</h2>
+            </div>
+            <button
+              onClick={() => void refreshAutomationData()}
+              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-xs font-black text-slate-700 hover:bg-slate-100"
+            >
+              <RefreshCw className="h-4 w-4" />
+              갱신
+            </button>
+          </div>
+
+          <div className="mt-5 grid grid-cols-2 gap-3">
+            <div className="rounded-[1.4rem] border border-slate-100 bg-slate-50 p-4">
+              <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">예약 중</div>
+              <div className="mt-2 text-xl font-black text-slate-900">{queueCounts.scheduled}</div>
+            </div>
+            <div className="rounded-[1.4rem] border border-slate-100 bg-slate-50 p-4">
+              <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">발행 완료</div>
+              <div className="mt-2 text-xl font-black text-slate-900">{queueCounts.published}</div>
+            </div>
+          </div>
+
+          {latestPublished && (
+            <div className="mt-5 rounded-[1.6rem] border border-emerald-100 bg-emerald-50/70 p-4">
+              <div className="text-[10px] font-black uppercase tracking-widest text-emerald-600">Latest Success</div>
+              <div className="mt-2 text-sm font-black text-slate-900">{latestPublished.festivalTitle || "최근 게시 완료"}</div>
+              <div className="mt-1 text-xs font-bold text-slate-500">{formatDateTime(latestPublished.publishedAt)}</div>
+              {latestPublished.permalink && (
+                <a
+                  href={latestPublished.permalink}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-3 inline-flex items-center gap-1 text-xs font-black text-emerald-700 hover:text-emerald-800"
+                >
+                  게시물 열기 <ExternalLink className="h-3.5 w-3.5" />
+                </a>
+              )}
+            </div>
+          )}
+        </section>
+
+        <SavedContentBoard
+          title="저장된 콘텐츠"
+          pageSize={10}
+          selectedItemId={selectedSavedCardnewsId}
+          onSelectItem={(item) => setSelectedSavedCardnewsId(item.id)}
+        />
+      </div>
+
 
     </div>
   );

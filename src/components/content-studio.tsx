@@ -2,7 +2,7 @@
 
 import React, { useCallback, useState, useEffect, useMemo, useRef } from 'react';
 import {
-  Search, FileText, Users, MousePointer2, Sparkles,
+  Search, FileText, Users, MousePointer2, Sparkles, Rocket, CalendarClock,
   Image as ImageIcon, Layout, Save, Calendar, RefreshCw, Info, X, Check, ExternalLink
 } from 'lucide-react';
 import { CarouselPreview, Slide } from '@/components/carousel-preview';
@@ -168,6 +168,23 @@ type SavedCardnewsItemResponse = {
   error?: string;
 };
 
+export type ContentStudioPublishPayload = {
+  caption: string;
+  imageUrl?: string | null;
+  backgroundImageUrl?: string | null;
+  aspectRatio?: string | null;
+  festivalId?: string | null;
+  festivalTitle?: string | null;
+  slideImageUrls?: string[];
+  slides?: Array<{
+    title?: string | null;
+    body?: string | null;
+    content?: string | null;
+    image?: string | null;
+    renderedImageUrl?: string | null;
+  }>;
+};
+
 type AngleType = 'SCARCITY' | 'LINEUP' | 'VIBE' | 'TIP' | 'VALUE' | 'TREND' | 'TOGETHER' | 'STORY';
 
 type SuggestedAngle = {
@@ -194,10 +211,31 @@ const SUGGEST_ANGLES_CACHE_TTL_MS = 10 * 60 * 1000;
 const buildSuggestedAnglesCacheKey = (content: string) =>
   content.replace(/\s+/g, ' ').trim().slice(0, 1200).toLowerCase();
 
-type ContentStudioProps = {
+interface ContentStudioProps {
   embedded?: boolean;
   selectedCardnewsId?: string | null;
-};
+  autoFestivalId?: string;
+  autoFestivalData?: {
+    id?: string | null;
+    title?: string | null;
+    location?: string | null;
+    startDate?: string | null;
+    endDate?: string | null;
+    genre?: string | null;
+    source?: string | null;
+    sourceLabel?: string | null;
+    imageUrl?: string | null;
+  };
+  autoTrigger?: boolean;
+  autoCurationIds?: string[];
+  autoCurationTheme?: string;
+  autoCurationTrigger?: boolean;
+  onPublishNow?: (payload: ContentStudioPublishPayload) => Promise<void> | void;
+  onSaveToQueue?: (payload: ContentStudioPublishPayload) => Promise<void> | void;
+  isPublishingNow?: boolean;
+  isScheduling?: boolean;
+  authLoading?: boolean;
+}
 
 const asSuggestedAngleType = (value: unknown): AngleType | null => {
   if (typeof value !== 'string') return null;
@@ -231,7 +269,22 @@ const buildAngleHintsContent = (angles: SuggestedAngle[]) => {
   return `[추천 콘텐츠 앵글]\n${lines.join('\n')}`;
 };
 
-export default function ContentStudio({ embedded = false, selectedCardnewsId = null }: ContentStudioProps) {
+export default function ContentStudio(props: ContentStudioProps) {
+  const {
+    embedded = false,
+    selectedCardnewsId = null,
+    autoFestivalData,
+    autoTrigger = false,
+    autoCurationIds = [],
+    autoCurationTheme = '이번 주 공연 소식',
+    autoCurationTrigger = false,
+    onPublishNow,
+    onSaveToQueue,
+    isPublishingNow = false,
+    isScheduling = false,
+    authLoading: externalAuthLoading = false,
+  } = props;
+
   // --- Content Creation State ---
   const [inputText, setInputText] = useState('');
   const [style, setStyle] = useState('카드뉴스');
@@ -256,6 +309,9 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
   const [isLoadingAngles, setIsLoadingAngles] = useState(false);
   const [showAngleSelector, setShowAngleSelector] = useState(false);
   const [showAllAngles, setShowAllAngles] = useState(false);
+  const [isCurationMode, setIsCurationMode] = useState(false);
+  const [curationFestivals, setCurationFestivals] = useState<UnifiedFestival[]>([]);
+  const [curationTheme, setCurationTheme] = useState('이번 주 공연 소식');
   const [isPublishing, setIsPublishing] = useState(false);
   const [publishError, setPublishError] = useState<string | null>(null);
   const [publishSuccessAt, setPublishSuccessAt] = useState<number | null>(null);
@@ -290,7 +346,14 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
   const [currentPage, setCurrentPage] = useState(1);
   const festivalListRef = useRef<HTMLDivElement | null>(null);
   const suggestedAnglesCacheRef = useRef<Map<string, { angles: angle[]; expiresAt: number }>>(new Map());
+  const autoTriggeredRef = useRef(false);
+  const autoCurationTriggeredRef = useRef(false);
+  const autoCurationGenerateRef = useRef(false);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+  const autoCurationIdsKey = useMemo(
+    () => autoCurationIds.map((id) => id.trim()).filter(Boolean).join('|'),
+    [autoCurationIds],
+  );
 
   const fetchFestivals = async (refresh = false) => {
     setIsFestivalsLoading(true);
@@ -361,10 +424,18 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
       const item = data.item;
       const nextSlides = Array.isArray(item.slides)
         ? item.slides.map((slide, index) => ({
+          renderedImageUrl:
+            typeof slide?.renderedImageUrl === 'string' && slide.renderedImageUrl.trim().length > 0
+              ? slide.renderedImageUrl.trim()
+              : undefined,
           id: `${item.id}-${index + 1}`,
           title: typeof slide?.title === 'string' && slide.title.trim() ? slide.title.trim() : `슬라이드 ${index + 1}`,
           body: typeof slide?.body === 'string' ? slide.body : '',
-          image: index === 0 && typeof item.imageUrl === 'string' ? item.imageUrl : undefined,
+          image:
+            (typeof slide?.renderedImageUrl === 'string' && slide.renderedImageUrl.trim().length > 0
+              ? slide.renderedImageUrl.trim()
+              : undefined)
+            || (index === 0 && typeof item.imageUrl === 'string' ? item.imageUrl : undefined),
         }))
         : [];
 
@@ -522,10 +593,10 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
   }, []);
 
   useEffect(() => {
-    if (SHOW_FESTIVAL_SOURCE_SECTION) {
+    if (SHOW_FESTIVAL_SOURCE_SECTION || autoCurationTrigger) {
       fetchFestivals();
     }
-  }, []);
+  }, [autoCurationTrigger]);
 
   useEffect(() => {
     if (authLoading) {
@@ -811,25 +882,86 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
     }
   }, [applySuggestedAngles, buildAuthHeaders, inputText]);
 
-  const handleFestivalSelect = (f: UnifiedFestival) => {
-    const detailsText = Array.isArray(f.details) && f.details.length > 0
-      ? f.details.map((d: { label: string; value: string }) =>
-          `${d.label}: ${d.value}`).join('\n')
-      : null;
+  useEffect(() => {
+    if (!autoTrigger || !autoFestivalData || autoTriggeredRef.current) return;
+    if (!autoFestivalData.title) return;
+
+    autoTriggeredRef.current = true;
 
     const parts = [
-      f.title,
-      f.location ? `장소: ${f.location}` : null,
-      f.startDate && f.endDate ? `기간: ${f.startDate} ~ ${f.endDate}` : null,
-      f.lineup ? `라인업: ${f.lineup}` : null,
-      f.price ? `티켓 가격: ${f.price}` : null,
-      f.homepage ? `공식 홈페이지: ${f.homepage}` : null,
-      detailsText ? `상세 정보:\n${detailsText}` : null,
-      f.description ? `본문: ${f.description.slice(0, 600)}` : null,
+      autoFestivalData.title,
+      autoFestivalData.location ? `장소: ${autoFestivalData.location}` : null,
+      autoFestivalData.startDate && autoFestivalData.endDate
+        ? `기간: ${autoFestivalData.startDate} ~ ${autoFestivalData.endDate}`
+        : null,
+      autoFestivalData.genre ? `장르: ${autoFestivalData.genre}` : null,
     ].filter(Boolean);
 
     const nextInputText = parts.join('\n');
+    setInputText(nextInputText);
+    if (autoFestivalData.genre) setGenre(autoFestivalData.genre);
+    if (autoFestivalData.source) setSource(autoFestivalData.source as FestivalSource);
+    if (autoFestivalData.imageUrl) setImageUrl(autoFestivalData.imageUrl);
 
+    void requestSuggestedAngles(nextInputText);
+  }, [autoTrigger, autoFestivalData, requestSuggestedAngles]);
+
+  useEffect(() => {
+    autoCurationTriggeredRef.current = false;
+    autoCurationGenerateRef.current = false;
+  }, [autoCurationIdsKey, autoCurationTheme, autoCurationTrigger]);
+
+  useEffect(() => {
+    if (!autoCurationTrigger || autoCurationTriggeredRef.current) return;
+    if (!Array.isArray(autoCurationIds) || autoCurationIds.length === 0) return;
+    if (festivals.length === 0) return;
+
+    const uniqueIds = Array.from(new Set(autoCurationIds.map((id) => id.trim()).filter(Boolean)));
+    if (uniqueIds.length === 0) return;
+
+    const selected = uniqueIds
+      .map((id) => festivals.find((festival) => festival.id === id))
+      .filter((item): item is UnifiedFestival => Boolean(item))
+      .slice(0, 8);
+
+    autoCurationTriggeredRef.current = true;
+    setIsCurationMode(true);
+    setCurationTheme(autoCurationTheme.trim() || '이번 주 공연 소식');
+    setCurationFestivals(selected);
+  }, [autoCurationIds, autoCurationTheme, autoCurationTrigger, festivals]);
+
+  // handleFestivalSelect 앞에 추가
+  const handleFestivalClick = (f: UnifiedFestival) => {
+    if (isCurationMode) {
+      setCurationFestivals((prev) =>
+        prev.find((x) => x.id === f.id)
+          ? prev.filter((x) => x.id !== f.id)
+          : [...prev, f].slice(0, 8),
+      );
+      return;
+    }
+    handleFestivalSelect(f);
+  };
+
+  const handleFestivalSelect = (f: UnifiedFestival) => {
+    const buildInputText = (festival: UnifiedFestival) => {
+      const detailsText = Array.isArray(festival.details) && festival.details.length > 0
+        ? festival.details.map((d: { label: string; value: string }) =>
+            `${d.label}: ${d.value}`).join('\n')
+        : null;
+      return [
+        festival.title,
+        festival.location ? `장소: ${festival.location}` : null,
+        festival.startDate && festival.endDate ? `기간: ${festival.startDate} ~ ${festival.endDate}` : null,
+        festival.lineup ? `라인업: ${festival.lineup}` : null,
+        festival.price ? `티켓 가격: ${festival.price}` : null,
+        festival.homepage ? `공식 홈페이지: ${festival.homepage}` : null,
+        detailsText ? `상세 정보:\n${detailsText}` : null,
+        festival.description ? `본문: ${festival.description.slice(0, 600)}` : null,
+      ].filter(Boolean).join('\n');
+    };
+
+    const nextInputText = buildInputText(f);
     setInputText(nextInputText);
     setGenre(f.genre || '');
     setSource(f.source);
@@ -837,6 +969,37 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
     setImageUrl(f.imageUrl || '');
     void requestSuggestedAngles(nextInputText);
     window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    void (async () => {
+      try {
+        const authHeaders = await buildAuthHeaders(true);
+        const res = await fetch('/api/festivals/research', {
+          method: 'POST',
+          headers: { ...authHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ festivalIds: [f.id] }),
+        });
+        if (!res.ok) return;
+        const data = await res.json().catch(() => null);
+        const result = Array.isArray(data?.results) ? data.results[0] : null;
+        if (!result?.researched) return;
+
+        const enriched: UnifiedFestival = {
+          ...f,
+          lineup: result.researched.lineup || f.lineup || '',
+          price: result.researched.ticketPrice || result.researched.price || f.price || '',
+          location: result.researched.venue || result.researched.location || f.location || '',
+          homepage: result.researched.bookingSite || result.researched.homepage || f.homepage || '',
+          description: result.researched.description || f.description || '',
+          details: Array.isArray(result.researched.details) && result.researched.details.length > 0
+            ? result.researched.details
+            : Array.isArray(f.details) ? f.details : [],
+        };
+
+        setInputText(buildInputText(enriched));
+      } catch {
+        // research 실패해도 기존 데이터로 계속 진행
+      }
+    })();
   };
 
   const formatDateTime = (iso: string) => {
@@ -978,6 +1141,46 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
   };
 
   const handleGenerate = async () => {
+    // handleGenerate 함수 상단에 추가
+    if (isCurationMode) {
+      if (curationFestivals.length < 2) {
+        alert('큐레이션 모드에서는 행사를 2개 이상 선택해주세요.');
+        return;
+      }
+      setIsGenerating(true);
+      try {
+        const headers = await buildAuthHeaders(true);
+        const response = await fetch('/api/generate-slides', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            mode: 'curation',
+            theme: curationTheme,
+            festivals: curationFestivals.map((f) => ({
+              title: f.title,
+              startDate: f.startDate,
+              endDate: f.endDate,
+              location: f.location,
+              genre: f.genre,
+              lineup: f.lineup || '',
+              price: f.price || '',
+              imageUrl: f.imageUrl || '',
+            })),
+            aspectRatio: ratio,
+          }),
+        });
+        const data = await response.json();
+        if (data.slides) {
+          setGeneratedSlides(data.slides);
+        }
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setIsGenerating(false);
+      }
+      return;
+    }
+
     if (!inputText) return;
     setPublishError(null);
     setPublishSuccessAt(null);
@@ -989,6 +1192,65 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
     }
     await executeSlideGeneration(selectedAngle);
   };
+
+  useEffect(() => {
+    if (!autoCurationTrigger) {
+      autoCurationGenerateRef.current = false;
+      return;
+    }
+    if (autoCurationGenerateRef.current) return;
+    if (!isCurationMode) return;
+    if (curationFestivals.length < 2) return;
+
+    autoCurationGenerateRef.current = true;
+
+    void (async () => {
+      setIsGenerating(true);
+      setPublishError(null);
+      setPublishSuccessAt(null);
+      setCanvaError(null);
+      setCanvaEditUrl(null);
+      try {
+        const headers = await buildAuthHeaders(true);
+        const response = await fetch('/api/generate-slides', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            mode: 'curation',
+            theme: curationTheme,
+            festivals: curationFestivals.map((festival) => ({
+              title: festival.title,
+              startDate: festival.startDate,
+              endDate: festival.endDate,
+              location: festival.location,
+              genre: festival.genre,
+              lineup: festival.lineup || '',
+              price: festival.price || '',
+              imageUrl: festival.imageUrl || '',
+            })),
+            aspectRatio: ratio,
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(typeof data?.error === 'string' ? data.error : '큐레이션 카드뉴스 생성에 실패했습니다.');
+        }
+        if (Array.isArray(data?.slides)) {
+          setGeneratedSlides(data.slides);
+        }
+        if (typeof data?.caption === 'string') {
+          setCaptionText(data.caption);
+        }
+        if (typeof data?.draftId === 'string') {
+          setDraftId(data.draftId);
+        }
+      } catch (error) {
+        console.error(error);
+      } finally {
+        setIsGenerating(false);
+      }
+    })();
+  }, [autoCurationTrigger, isCurationMode, curationFestivals, curationTheme, buildAuthHeaders, ratio]);
 
   const handlePublish = async () => {
     if (!draftId) return;
@@ -1014,6 +1276,40 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
       setIsPublishing(false);
     }
   };
+
+  const hasPublishablePreview = generatedSlides.length > 0 && captionText.trim().length > 0;
+  const buildExternalPublishPayload = useCallback((): ContentStudioPublishPayload => {
+    const normalizedSlides = generatedSlides.map((slide, index) => ({
+      title: (slide.title || `슬라이드 ${index + 1}`).trim(),
+      body: (slide.body || slide.content || '').trim(),
+      content: (slide.content || '').trim(),
+      image: typeof slide.image === 'string' && slide.image.trim().length > 0 ? slide.image.trim() : null,
+      renderedImageUrl:
+        typeof slide.renderedImageUrl === 'string' && slide.renderedImageUrl.trim().length > 0
+          ? slide.renderedImageUrl.trim()
+          : null,
+    }));
+
+    const firstLineTitle = inputText
+      .split('\n')
+      .map((line) => line.trim())
+      .find((line) => line.length > 0) || null;
+    const fallbackImageUrl = normalizedSlides[0]?.image || null;
+    const resolvedImageUrl = (imageUrl || fallbackImageUrl || '').trim() || null;
+    const slideImageUrls = normalizedSlides
+      .map((slide) => slide.renderedImageUrl)
+      .filter((url): url is string => typeof url === 'string' && url.trim().length > 0)
+      .slice(0, 10);
+
+    return {
+      caption: captionText,
+      imageUrl: resolvedImageUrl,
+      aspectRatio: ratio,
+      festivalTitle: firstLineTitle || sourceLabel || source || null,
+      slideImageUrls,
+      slides: normalizedSlides,
+    };
+  }, [captionText, generatedSlides, imageUrl, inputText, ratio, source, sourceLabel]);
 
   const handleSendToCanva = async () => {
     if (!generatedSlides.length) return;
@@ -1180,24 +1476,28 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
                   </div>
                 </div>
 
-                <div className="mt-4 rounded-[1.35rem] border border-slate-100 bg-slate-50/70 p-4">
-                  <div className="flex items-end justify-between">
-                    <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">슬라이드 개수</label>
-                    <span className="text-xl font-black leading-none text-pink-600">{slideCount}<span className="ml-1 text-xs font-bold text-slate-400">장</span></span>
+                <div className="mt-4">
+                  <div className="mb-2 flex items-center justify-between">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">슬라이드 수</label>
+                    <span className="text-xs font-black text-pink-600">
+                      {slideCount > 0 ? `${slideCount}장 고정` : 'AI 자율 결정'}
+                    </span>
                   </div>
-                  <input
-                    type="range"
-                    min="1"
-                    max="20"
-                    step="1"
-                    value={slideCount}
-                    onChange={(e) => setSlideCount(parseInt(e.target.value))}
-                    className="mt-4 h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-200 accent-[#E91E63]"
-                  />
-                  <div className="mt-3 flex justify-between text-[10px] font-bold uppercase tracking-tighter text-slate-400">
-                    <span>초간결</span>
-                    <span>표준</span>
-                    <span>딥다이브</span>
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="range"
+                      min="0"
+                      max="10"
+                      step="1"
+                      value={slideCount}
+                      onChange={(e) => setSlideCount(Number.parseInt(e.target.value, 10))}
+                      className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-200 accent-[#E91E63]"
+                    />
+                  </div>
+                  <div className="mt-1 text-[10px] font-bold text-slate-400">
+                    {slideCount === 0
+                      ? '슬라이더를 0으로 두면 AI가 콘텐츠 양에 맞게 자동으로 결정합니다.'
+                      : `${slideCount}장으로 고정 생성합니다.`}
                   </div>
                 </div>
 
@@ -1358,7 +1658,11 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
                   )}
                   {isGenerating
                     ? (slideCount >= 10 ? '기획안과 캡션을 작성 중입니다. 잠시만 기다려 주세요...' : 'AI 에디터가 기획안과 캡션을 구성 중입니다...')
-                    : (showAngleSelector ? '기획안+캡션 생성하기' : '앵글 추천받기')
+                    : selectedAngle
+                    ? `"${selectedAngle.label}" 앵글로 생성하기`
+                    : showAngleSelector
+                    ? '기획안+캡션 생성하기'
+                    : '앵글 추천받기'
                   }
                 </button>
               </div>
@@ -1432,6 +1736,32 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
                     </div>
                   </div>
                   <CarouselPreview slides={generatedSlides} aspectRatio={ratio} caption={captionText} />
+                  {(onPublishNow || onSaveToQueue) && (
+                    <div className="mt-4 flex flex-col gap-3">
+                      <button
+                        onClick={() => {
+                          const payload = buildExternalPublishPayload();
+                          void onPublishNow?.(payload);
+                        }}
+                        disabled={!onPublishNow || !hasPublishablePreview || externalAuthLoading || authLoading || isPublishingNow || isScheduling}
+                        className="inline-flex items-center justify-center gap-2 rounded-[1.25rem] bg-pink-600 px-5 py-3.5 text-sm font-black text-white shadow-lg shadow-pink-200 transition-all hover:bg-pink-700 disabled:opacity-50"
+                      >
+                        {isPublishingNow ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
+                        지금 인스타그램에 게시
+                      </button>
+                      <button
+                        onClick={() => {
+                          const payload = buildExternalPublishPayload();
+                          void onSaveToQueue?.(payload);
+                        }}
+                        disabled={!onSaveToQueue || !hasPublishablePreview || externalAuthLoading || authLoading || isScheduling || isPublishingNow}
+                        className="inline-flex items-center justify-center gap-2 rounded-[1.25rem] border border-slate-200 bg-white px-5 py-3.5 text-sm font-black text-slate-700 transition-all hover:bg-slate-50 disabled:opacity-50"
+                      >
+                        {isScheduling ? <RefreshCw className="h-4 w-4 animate-spin" /> : <CalendarClock className="h-4 w-4" />}
+                        예약 큐에 저장
+                      </button>
+                    </div>
+                  )}
                   {canvaEditUrl && (
                     <a
                       href={canvaEditUrl}
@@ -1753,6 +2083,62 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
 
           {/* Festival Gallery (Scrollable) */}
           <div ref={festivalListRef} className="max-h-[72vh] overflow-y-auto px-6 py-6">
+            <div className="mb-3 flex items-center justify-between">
+              <p className="text-[11px] font-black text-slate-600">행사 선택</p>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsCurationMode((prev) => !prev);
+                  setCurationFestivals([]);
+                }}
+                className={cn(
+                  'rounded-full border px-3 py-1 text-[10px] font-black transition-all',
+                  isCurationMode
+                    ? 'border-pink-500 bg-pink-500 text-white'
+                    : 'border-slate-200 bg-white text-slate-500 hover:border-pink-300',
+                )}
+              >
+                {isCurationMode ? '✦ 큐레이션 모드' : '큐레이션 모드'}
+              </button>
+            </div>
+
+            {isCurationMode && (
+              <div className="mb-3 rounded-xl border border-pink-100 bg-pink-50 p-3">
+                <p className="text-[10px] font-black text-pink-700">큐레이션 모드</p>
+                <p className="mt-1 text-[10px] font-bold text-pink-500">
+                  여러 행사를 클릭해서 선택하세요. 선택한 행사들을 하나의 카드뉴스로 묶습니다.
+                </p>
+                <div className="mt-2">
+                  <input
+                    type="text"
+                    value={curationTheme}
+                    onChange={(e) => setCurationTheme(e.target.value)}
+                    placeholder="테마 입력 (예: 이번 주 공연 소식)"
+                    className="w-full rounded-lg border border-pink-200 bg-white px-3 py-1.5 text-[11px] font-bold outline-none focus:border-pink-400"
+                  />
+                </div>
+                {curationFestivals.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {curationFestivals.map((f) => (
+                      <span
+                        key={f.id}
+                        className="flex items-center gap-1 rounded-full bg-pink-200 px-2 py-0.5 text-[10px] font-black text-pink-800"
+                      >
+                        {f.title.slice(0, 10)}
+                        <button
+                          type="button"
+                          onClick={() => setCurationFestivals((prev) => prev.filter((x) => x.id !== f.id))}
+                          className="text-pink-600 hover:text-pink-900"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
             {isFestivalsLoading && festivals.length === 0 ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-6">
                 {[...Array(10)].map((_, i) => (
@@ -1775,7 +2161,7 @@ export default function ContentStudio({ embedded = false, selectedCardnewsId = n
                   {paginatedFestivals.map((festival) => (
                     <div
                       key={festival.id}
-                      onClick={() => handleFestivalSelect(festival)}
+                      onClick={() => handleFestivalClick(festival)}
                       className="group cursor-pointer"
                     >
                       <div className="relative aspect-[3/4] rounded-3xl overflow-hidden bg-slate-200 shadow-sm border-2 border-slate-100 group-hover:shadow-xl group-hover:border-pink-300 group-hover:-translate-y-1 transition-all duration-300">

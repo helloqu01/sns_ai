@@ -69,21 +69,14 @@ const renderSlideBuffer = async (params: {
 }) => {
   const title = clampText(params.slide.title, 80, `슬라이드 ${params.index + 1}`);
   const body = clampText(getBodyText(params.slide), 260, "핵심 정보를 확인하세요.");
-  const indexLabel = String(params.index + 1);
   const isCoverSlide = params.index === 0;
   const { width, height } = resolveSize(params.ratio);
-
-  const backgroundStyle = isHttpUrl(params.backgroundImageUrl)
-    ? {
-        backgroundImage: `linear-gradient(180deg, rgba(2,6,23,0.35) 0%, rgba(2,6,23,0.8) 100%), url(${params.backgroundImageUrl})`,
-        backgroundSize: "cover",
-        backgroundRepeat: "no-repeat",
-        backgroundPosition: "center",
-      }
-    : {
-        backgroundImage:
-          "radial-gradient(circle at 20% 20%, #fb7185 0%, transparent 48%), radial-gradient(circle at 80% 15%, #a78bfa 0%, transparent 42%), linear-gradient(150deg, #0f172a 0%, #1e293b 45%, #334155 100%)",
-      };
+  const preferredBackgroundUrl = isHttpUrl(params.slide.image)
+    ? params.slide.image
+    : params.backgroundImageUrl;
+  const hasBackgroundImage = isHttpUrl(preferredBackgroundUrl);
+  const fallbackBackground =
+    "radial-gradient(circle at 20% 20%, #fb7185 0%, transparent 48%), radial-gradient(circle at 80% 15%, #a78bfa 0%, transparent 42%), linear-gradient(150deg, #0f172a 0%, #1e293b 45%, #334155 100%)";
 
   const image = new ImageResponse(
     (
@@ -96,19 +89,36 @@ const renderSlideBuffer = async (params: {
           padding: isCoverSlide ? 52 : 64,
           color: "#ffffff",
           fontFamily: "sans-serif",
-          ...backgroundStyle,
+          backgroundImage: hasBackgroundImage ? undefined : fallbackBackground,
+          backgroundSize: "cover",
+          backgroundRepeat: "no-repeat",
+          backgroundPosition: "center",
         }}
       >
+        {hasBackgroundImage && preferredBackgroundUrl ? (
+          <img
+            src={preferredBackgroundUrl}
+            alt=""
+            style={{
+              position: "absolute",
+              inset: 0,
+              width: "100%",
+              height: "100%",
+              objectFit: "cover",
+              objectPosition: "center",
+            }}
+          />
+        ) : null}
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            background:
+              "linear-gradient(180deg, rgba(2,6,23,0.12) 0%, rgba(2,6,23,0.26) 45%, rgba(2,6,23,0.64) 100%)",
+          }}
+        />
         {isCoverSlide ? (
           <>
-            <div
-              style={{
-                position: "absolute",
-                inset: 0,
-                background:
-                  "linear-gradient(180deg, rgba(2,6,23,0.06) 0%, rgba(2,6,23,0.22) 45%, rgba(2,6,23,0.68) 100%)",
-              }}
-            />
             <div
               style={{
                 position: "relative",
@@ -136,24 +146,6 @@ const renderSlideBuffer = async (params: {
           </>
         ) : (
           <>
-            <div
-              style={{
-                position: "absolute",
-                top: 34,
-                right: 34,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                borderRadius: 9999,
-                border: "1px solid rgba(255,255,255,0.28)",
-                background: "rgba(15,23,42,0.45)",
-                padding: "10px 16px",
-                fontSize: 22,
-                fontWeight: 700,
-              }}
-            >
-              {`SLIDE ${indexLabel}`}
-            </div>
             <div
               style={{
                 width: "100%",

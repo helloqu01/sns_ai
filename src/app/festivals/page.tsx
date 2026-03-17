@@ -76,14 +76,15 @@ export default function FestivalsPage() {
     const [genreFilter, setGenreFilter] = useState<string>('전체');
     const [sortBy, setSortBy] = useState<'saved-desc' | 'date-asc' | 'date-desc'>('saved-desc');
     const [selectedFestival, setSelectedFestival] = useState<UnifiedFestival | null>(null);
-    const [visibleCount, setVisibleCount] = useState(FESTIVALS_PER_PAGE);
+    const [currentPage, setCurrentPage] = useState(1);
     const festivalListRef = useRef<HTMLDivElement | null>(null);
-    const loadMoreRef = useRef<HTMLDivElement | null>(null);
     const [lastUpdated, setLastUpdated] = useState<string | null>(null);
     const [showScrollTopButton, setShowScrollTopButton] = useState(false);
     const [newFestivals, setNewFestivals] = useState<UnifiedFestival[]>([]);
     const [showNewFestivalsModal, setShowNewFestivalsModal] = useState(false);
     const [selectedFestivalIds, setSelectedFestivalIds] = useState<string[]>([]);
+    const [isCurationMode, setIsCurationMode] = useState(false);
+    const [curationTheme, setCurationTheme] = useState('이번 주 공연 소식');
     const [isNaverUpdating, setIsNaverUpdating] = useState(false);
     const [naverUpdateMessage, setNaverUpdateMessage] = useState<string | null>(null);
     const [showNaverUpdateModal, setShowNaverUpdateModal] = useState(false);
@@ -142,6 +143,21 @@ export default function FestivalsPage() {
 
     const clearFestivalSelection = () => {
         setSelectedFestivalIds([]);
+    };
+
+    const handleCurationPlanCreate = () => {
+        if (selectedFestivalIds.length < 2) {
+            alert('큐레이션 모드에서는 행사 2개 이상 선택해 주세요.');
+            return;
+        }
+
+        const params = new URLSearchParams({
+            autoplan: '1',
+            curation: '1',
+            curationTheme: curationTheme.trim() || '이번 주 공연 소식',
+            curationIds: selectedFestivalIds.slice(0, 8).join(','),
+        });
+        window.location.href = `/instagram-ai?${params.toString()}`;
     };
 
     const handleSelectedNaverUpdate = async () => {
@@ -218,6 +234,19 @@ export default function FestivalsPage() {
         });
     }, [festivals]);
 
+    useEffect(() => {
+        if (!selectedFestival) return;
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                setSelectedFestival(null);
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [selectedFestival]);
+
     // Get unique genres for the active source
     const availableGenres = useMemo(() => {
         const sourceFestivals = festivals.filter((festival) => matchesSourceTab(festival, activeSourceTab));
@@ -240,7 +269,7 @@ export default function FestivalsPage() {
     }, [activeSourceTab]);
 
     useEffect(() => {
-        setVisibleCount(FESTIVALS_PER_PAGE);
+        setCurrentPage(1);
     }, [activeSourceTab, filter, genreFilter, sortBy]);
 
     const filteredFestivals = festivals.filter(f => {
@@ -297,24 +326,31 @@ export default function FestivalsPage() {
         return sortBy === 'date-asc' ? dateA - dateB : dateB - dateA;
     });
 
-    const visibleFestivals = filteredFestivals.slice(0, visibleCount);
-    const hasMore = visibleCount < filteredFestivals.length;
+    const totalPages = Math.max(1, Math.ceil(filteredFestivals.length / FESTIVALS_PER_PAGE));
+    const safeCurrentPage = Math.min(currentPage, totalPages);
+    const pageStartIndex = (safeCurrentPage - 1) * FESTIVALS_PER_PAGE;
+    const paginatedFestivals = filteredFestivals.slice(pageStartIndex, pageStartIndex + FESTIVALS_PER_PAGE);
+    const paginationTokens = (() => {
+        if (totalPages <= 7) {
+            return Array.from({ length: totalPages }, (_, index) => index + 1);
+        }
+        const tokens: Array<number | 'ellipsis'> = [1];
+        const start = Math.max(2, safeCurrentPage - 1);
+        const end = Math.min(totalPages - 1, safeCurrentPage + 1);
+        if (start > 2) tokens.push('ellipsis');
+        for (let page = start; page <= end; page += 1) {
+            tokens.push(page);
+        }
+        if (end < totalPages - 1) tokens.push('ellipsis');
+        tokens.push(totalPages);
+        return tokens;
+    })();
 
     useEffect(() => {
-        if (!loadMoreRef.current || isLoading || !hasMore) return;
-
-        const observer = new IntersectionObserver(
-            (entries) => {
-                const first = entries[0];
-                if (!first?.isIntersecting) return;
-                setVisibleCount((prev) => Math.min(prev + FESTIVALS_PER_PAGE, filteredFestivals.length));
-            },
-            { rootMargin: '260px 0px' },
-        );
-
-        observer.observe(loadMoreRef.current);
-        return () => observer.disconnect();
-    }, [filteredFestivals.length, hasMore, isLoading]);
+        if (currentPage > totalPages) {
+            setCurrentPage(totalPages);
+        }
+    }, [currentPage, totalPages]);
 
     const handleCreatePlan = (f: UnifiedFestival) => {
         const params = new URLSearchParams({
@@ -444,11 +480,11 @@ export default function FestivalsPage() {
 
     useEffect(() => {
         updateScrollTopButtonVisibility();
-    }, [updateScrollTopButtonVisibility, visibleFestivals.length, filteredFestivals.length, isLoading]);
+    }, [updateScrollTopButtonVisibility, paginatedFestivals.length, filteredFestivals.length, isLoading]);
 
     return (
         <div className="min-h-screen bg-transparent pb-20">
-            <main className="max-w-7xl mx-auto px-6 py-10">
+            <main className="mx-auto max-w-[1680px] px-3 py-8 lg:px-5">
                 <header className="mb-8">
                     <div className="inline-flex items-center gap-2 rounded-full border border-pink-200 bg-pink-50 px-4 py-2 text-[11px] font-black uppercase tracking-[0.24em] text-pink-600">
                         <PartyPopper className="h-4 w-4" />
@@ -461,7 +497,7 @@ export default function FestivalsPage() {
                 </header>
                 <div className="rounded-3xl border border-slate-200 bg-white overflow-hidden">
                     {/* Sub Filters (Sticky) */}
-                    <div className="sticky top-0 z-20 bg-white p-6 border-b border-slate-100 shadow-sm">
+                    <div className="sticky top-0 z-20 border-b border-slate-100 bg-white p-4 shadow-sm lg:p-5">
                         <div className="flex flex-wrap items-center gap-8">
                             <div className="space-y-3 min-w-[320px]">
                                 <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest pl-1">리스트 구분</label>
@@ -554,19 +590,18 @@ export default function FestivalsPage() {
                             </div>
                         </div>
                         <p className="mt-4 text-xs font-bold text-slate-400">
-                            총 {filteredFestivals.length}건 · 현재 {visibleFestivals.length}건 표시
+                            총 {filteredFestivals.length}건 · 페이지 {safeCurrentPage}/{totalPages} · 페이지당 {FESTIVALS_PER_PAGE}건
                         </p>
                         <div className="mt-3 flex flex-wrap items-center gap-2">
                             <span className="text-xs font-bold text-slate-500">
                                 선택 {selectedFestivalIds.length}건
                             </span>
                             <button
-                                onClick={handleSelectedNaverUpdate}
-                                disabled={selectedFestivalIds.length === 0 || isNaverUpdating}
-                                className="inline-flex items-center gap-1.5 rounded-xl bg-pink-600 px-3 py-2 text-[11px] font-black text-white transition-all hover:bg-pink-500 disabled:cursor-not-allowed disabled:bg-slate-300"
+                                onClick={() => setSelectedFestivalIds(filteredFestivals.map((festival) => festival.id))}
+                                disabled={filteredFestivals.length === 0 || isNaverUpdating}
+                                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] font-black text-slate-500 transition-all hover:border-pink-300 hover:text-pink-600 disabled:cursor-not-allowed disabled:opacity-50"
                             >
-                                <RefreshCw className={`h-3.5 w-3.5 ${isNaverUpdating ? 'animate-spin' : ''}`} />
-                                선택 항목 AI 조사 업데이트
+                                전체 선택
                             </button>
                             <button
                                 onClick={clearFestivalSelection}
@@ -575,7 +610,54 @@ export default function FestivalsPage() {
                             >
                                 선택 해제
                             </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setIsCurationMode((prev) => !prev);
+                                    setSelectedFestivalIds([]);
+                                }}
+                                className={`rounded-full border px-3 py-1 text-[11px] font-black transition-all ${
+                                    isCurationMode
+                                        ? 'border-pink-500 bg-pink-500 text-white'
+                                        : 'border-slate-200 bg-white text-slate-500 hover:border-pink-300'
+                                }`}
+                            >
+                                {isCurationMode ? '✦ 큐레이션 모드' : '큐레이션 모드'}
+                            </button>
+                            {isCurationMode && (
+                                <button
+                                    onClick={handleCurationPlanCreate}
+                                    disabled={selectedFestivalIds.length < 2}
+                                    className="inline-flex items-center gap-1.5 rounded-xl bg-pink-600 px-3 py-2 text-[11px] font-black text-white shadow-sm transition-all hover:bg-pink-500 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-100"
+                                >
+                                    <Sparkles className="h-3.5 w-3.5" />
+                                    선택 항목 큐레이션 기획하기
+                                </button>
+                            )}
+                            <button
+                                onClick={handleSelectedNaverUpdate}
+                                disabled={selectedFestivalIds.length === 0 || isNaverUpdating}
+                                className="inline-flex items-center gap-1.5 rounded-xl bg-pink-600 px-3 py-2 text-[11px] font-black text-white transition-all hover:bg-pink-500 disabled:cursor-not-allowed disabled:bg-slate-300"
+                            >
+                                <RefreshCw className={`h-3.5 w-3.5 ${isNaverUpdating ? 'animate-spin' : ''}`} />
+                                선택 항목 AI 조사 업데이트
+                            </button>
                         </div>
+                        {isCurationMode && (
+                            <div className="mt-3 rounded-2xl border border-pink-100 bg-pink-50 px-3 py-3">
+                                <p className="text-[10px] font-black text-pink-700">큐레이션 모드</p>
+                                <p className="mt-1 text-[11px] font-bold text-pink-500">
+                                    카드 우측 상단 체크 버튼으로 행사를 2개 이상 선택한 뒤 큐레이션 기획하기를 눌러주세요.
+                                </p>
+                                <input
+                                    type="text"
+                                    value={curationTheme}
+                                    onChange={(event) => setCurationTheme(event.target.value)}
+                                    placeholder="테마 입력 (예: 이번 주 공연 소식)"
+                                    className="mt-2 w-full rounded-xl border border-pink-200 bg-white px-3 py-2 text-[11px] font-bold text-slate-700 outline-none focus:border-pink-400"
+                                />
+                            </div>
+                        )}
                         {naverUpdateMessage && (
                             <div className="mt-2 flex flex-wrap items-center gap-2">
                                 <p className="text-[11px] font-bold text-slate-500">{naverUpdateMessage}</p>
@@ -592,9 +674,9 @@ export default function FestivalsPage() {
                     </div>
 
                     {/* Grid (Scrollable) */}
-                    <div ref={festivalListRef} className="p-6">
+                    <div ref={festivalListRef} className="p-4 lg:p-5">
                         {isLoading && festivals.length === 0 ? (
-                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
                                 {[...Array(8)].map((_, i) => (
                                     <div key={i} className="aspect-[3/4] bg-white border border-slate-200 rounded-3xl p-4 animate-pulse">
                                         <div className="w-full h-full bg-slate-100 rounded-2xl" />
@@ -611,13 +693,19 @@ export default function FestivalsPage() {
                             </div>
                         ) : (
                             <>
-                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-6 gap-y-10">
-                                    {visibleFestivals.map((festival) => {
+                                <div className="grid grid-cols-1 gap-x-5 gap-y-7 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
+                                    {paginatedFestivals.map((festival) => {
                                         const isSelected = selectedFestivalIds.includes(festival.id);
                                         return (
                                             <div
                                                 key={festival.id}
-                                                onClick={() => setSelectedFestival(festival)}
+                                                onClick={() => {
+                                                    if (isCurationMode) {
+                                                        toggleFestivalSelection(festival.id);
+                                                        return;
+                                                    }
+                                                    setSelectedFestival(festival);
+                                                }}
                                                 className="group cursor-pointer"
                                             >
                                                 <div className={`relative aspect-[3/4] rounded-[32px] overflow-hidden bg-slate-200 shadow-lg border-4 group-hover:shadow-2xl group-hover:-translate-y-2 transition-all duration-500 ${isSelected ? 'border-pink-500 shadow-pink-200' : 'border-white'}`}>
@@ -678,9 +766,49 @@ export default function FestivalsPage() {
                                         );
                                     })}
                                 </div>
-                                <div ref={loadMoreRef} className="h-14 mt-8 flex items-center justify-center">
-                                    {hasMore && <span className="text-xs font-bold text-slate-400">스크롤하면 더 불러옵니다…</span>}
-                                </div>
+                                {totalPages > 1 && (
+                                    <div className="mt-10 flex flex-wrap items-center justify-center gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
+                                            disabled={safeCurrentPage === 1}
+                                            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-black text-slate-500 transition-all hover:border-pink-300 hover:text-pink-600 disabled:cursor-not-allowed disabled:opacity-40"
+                                        >
+                                            이전
+                                        </button>
+                                        {paginationTokens.map((token, index) => (
+                                            token === 'ellipsis' ? (
+                                                <span
+                                                    key={`ellipsis-${index}`}
+                                                    className="px-2 text-[11px] font-black text-slate-400"
+                                                >
+                                                    ...
+                                                </span>
+                                            ) : (
+                                                <button
+                                                    key={`page-${token}`}
+                                                    type="button"
+                                                    onClick={() => setCurrentPage(token)}
+                                                    className={`h-8 min-w-8 rounded-lg px-2 text-[11px] font-black transition-all ${
+                                                        safeCurrentPage === token
+                                                            ? 'bg-pink-600 text-white'
+                                                            : 'border border-slate-200 bg-white text-slate-500 hover:border-pink-300 hover:text-pink-600'
+                                                    }`}
+                                                >
+                                                    {token}
+                                                </button>
+                                            )
+                                        ))}
+                                        <button
+                                            type="button"
+                                            onClick={() => setCurrentPage((prev) => Math.min(prev + 1, totalPages))}
+                                            disabled={safeCurrentPage === totalPages}
+                                            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-black text-slate-500 transition-all hover:border-pink-300 hover:text-pink-600 disabled:cursor-not-allowed disabled:opacity-40"
+                                        >
+                                            다음
+                                        </button>
+                                    </div>
+                                )}
                             </>
                         )}
                     </div>

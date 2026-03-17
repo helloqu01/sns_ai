@@ -101,19 +101,24 @@ const parseSlides = (value: unknown) => {
     .filter((slide): slide is CardnewsAssetSlide => Boolean(slide));
 };
 
-const buildPreviewRenderUrl = (params: {
+const buildSlideRenderUrl = (params: {
   origin: string;
   slide: CardnewsAssetSlide;
+  index?: number;
   ratio?: string | null;
   backgroundImageUrl?: string | null;
 }) => {
   const url = new URL("/api/cardnews/slide-image", params.origin);
-  url.searchParams.set("title", (params.slide.title || "슬라이드 1").slice(0, 80));
+  const nextIndex = Number.isFinite(params.index) && Number(params.index) > 0
+    ? Number(params.index)
+    : 1;
+  url.searchParams.set("title", (params.slide.title || `슬라이드 ${nextIndex}`).slice(0, 80));
   url.searchParams.set("body", (params.slide.body || params.slide.content || "").slice(0, 260));
   url.searchParams.set("ratio", asNonEmptyString(params.ratio) || "4:5");
-  url.searchParams.set("index", "1");
-  if (asNonEmptyString(params.backgroundImageUrl)) {
-    url.searchParams.set("bg", asNonEmptyString(params.backgroundImageUrl) || "");
+  url.searchParams.set("index", String(nextIndex));
+  const preferredBgUrl = asNonEmptyString(params.slide.image) || asNonEmptyString(params.backgroundImageUrl);
+  if (preferredBgUrl) {
+    url.searchParams.set("bg", preferredBgUrl);
   }
   return url.toString();
 };
@@ -270,7 +275,7 @@ export async function POST(req: NextRequest) {
     const fallbackSlideImageUrls = parseSlideImageUrls(body.slideImageUrls);
     const slides = parseSlides(body.slides);
     const aspectRatio = asNonEmptyString(body.aspectRatio);
-    const backgroundImageUrl = asNonEmptyString(body.backgroundImageUrl) || imageUrl;
+    const backgroundImageUrl = asNonEmptyString(body.backgroundImageUrl);
     const festivalId = asNonEmptyString(body.festivalId);
     const festivalTitle = asNonEmptyString(body.festivalTitle);
     const mode = parseMode(body.mode);
@@ -290,11 +295,25 @@ export async function POST(req: NextRequest) {
     if (!publishAssetId) {
       tempPublishAssetId = null;
     }
-    const slideImageUrls = materialized?.slideImageUrls || fallbackSlideImageUrls;
+    const renderedFallbackSlideImageUrls = !materialized && slides.length > 1
+      ? slides
+          .map((slide, index) => buildSlideRenderUrl({
+            origin: requestOrigin,
+            slide,
+            index: index + 1,
+            ratio: aspectRatio,
+            backgroundImageUrl,
+          }))
+          .filter((url) => isValidImageUrl(url))
+          .slice(0, 10)
+      : [];
+    const slideImageUrls = materialized?.slideImageUrls
+      || (renderedFallbackSlideImageUrls.length > 0 ? renderedFallbackSlideImageUrls : fallbackSlideImageUrls);
     const primaryImageUrl = slides[0]
-      ? buildPreviewRenderUrl({
+      ? buildSlideRenderUrl({
           origin: requestOrigin,
           slide: slides[0],
+          index: 1,
           ratio: aspectRatio,
           backgroundImageUrl,
         })

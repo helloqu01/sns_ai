@@ -112,14 +112,15 @@ export function CarouselPreview({
                     const titleText = (slide.title || `슬라이드 ${index + 1}`).trim();
                     const bodyText = (slide.body || slide.content || '').trim();
                     const isCoverSlide = index === 0;
+                    const slideImageUrl = (slide.renderedImageUrl || slide.image || '').trim();
 
                     return (
                     <SwiperSlide key={slide.id || index}>
                         <div className="relative w-full h-full bg-slate-900 overflow-hidden p-6 sm:p-8 text-white">
-                            {slide.image ? (
+                            {slideImageUrl ? (
                                 <>
                                     <img
-                                        src={slide.image}
+                                        src={slideImageUrl}
                                         alt=""
                                         className="absolute inset-0 w-full h-full object-cover opacity-60"
                                     />
@@ -138,9 +139,6 @@ export function CarouselPreview({
                                     </div>
                                 ) : (
                                     <>
-                                        <div className="mb-3 inline-flex w-fit rounded-full border border-white/35 bg-black/30 px-3 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-white/90 backdrop-blur-sm">
-                                            Slide {index + 1}
-                                        </div>
                                         <h2 className="rounded-xl border border-white/25 bg-black/30 px-4 py-3 text-xl font-black leading-tight drop-shadow-md">
                                             {titleText}
                                         </h2>
