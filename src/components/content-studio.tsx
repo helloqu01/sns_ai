@@ -143,6 +143,7 @@ type SavedCardnewsSlide = {
   title?: string | null;
   body?: string | null;
   keywords?: string | null;
+  renderedImageUrl?: string | null;
 };
 
 type SavedCardnewsItem = {
