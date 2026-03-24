@@ -20,6 +20,57 @@ export const metadata: Metadata = {
   description: "Create stunning festival card news with AI in minutes.",
 };
 
+const DEV_BROWSER_RECOVERY_SCRIPT = `
+(function () {
+  if (typeof window === "undefined") return;
+  var host = window.location.hostname;
+  var isLoopback = host === "127.0.0.1" || host === "localhost" || host === "0.0.0.0" || host === "::1" || host === "[::1]";
+  if (!isLoopback) return;
+  var runKey = "__sns_ai_dev_recovery_v2__";
+  if (window.sessionStorage.getItem(runKey)) return;
+  window.sessionStorage.setItem(runKey, "1");
+
+  var cleanupTasks = [];
+  if ("serviceWorker" in navigator && navigator.serviceWorker) {
+    cleanupTasks.push(
+      navigator.serviceWorker.getRegistrations()
+        .then(function (regs) {
+          return Promise.all(regs.map(function (reg) { return reg.unregister(); }))
+            .then(function () { return regs.length; });
+        })
+        .catch(function () { return 0; })
+    );
+  }
+
+  if ("caches" in window && window.caches) {
+    cleanupTasks.push(
+      caches.keys()
+        .then(function (keys) {
+          return Promise.all(keys.map(function (key) { return caches.delete(key); }))
+            .then(function () { return keys.length; });
+        })
+        .catch(function () { return 0; })
+    );
+  }
+
+  Promise.all(cleanupTasks).then(function (counts) {
+    var touched = counts.some(function (count) { return count > 0; });
+    if (touched) {
+      window.location.reload();
+      return;
+    }
+
+    if (window.location.pathname === "/login") return;
+    window.setTimeout(function () {
+      var text = document.body && document.body.textContent ? document.body.textContent : "";
+      if (text.indexOf("로그인 확인 중") !== -1) {
+        window.location.replace("/login?auth=recovery");
+      }
+    }, 7000);
+  });
+})();
+`;
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -28,6 +79,11 @@ export default function RootLayout({
   return (
     <html lang="ko">
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
+        {process.env.NODE_ENV === "development" && (
+          <script
+            dangerouslySetInnerHTML={{ __html: DEV_BROWSER_RECOVERY_SCRIPT }}
+          />
+        )}
         <LocalhostCanonicalizer />
         <AuthProvider>
           <AppShell>{children}</AppShell>

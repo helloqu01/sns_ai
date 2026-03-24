@@ -78,6 +78,8 @@ export default function LoginPage() {
       setInfoMessage("인증 메일 전송에 실패했습니다. 도메인 설정과 스팸함을 확인해주세요.");
     } else if (params.get("auth") === "timeout") {
       setInfoMessage("로그인 상태 확인이 지연되어 로그인 페이지로 이동했습니다. 다시 로그인해 주세요.");
+    } else if (params.get("auth") === "recovery") {
+      setInfoMessage("브라우저 캐시/서비스워커 충돌을 자동 복구하고 로그인 페이지로 이동했습니다.");
     }
     const currentUrl = new URL(window.location.href);
     const isLoopbackHost = ["127.0.0.1", "localhost", "::1", "[::1]"].includes(currentUrl.hostname);
