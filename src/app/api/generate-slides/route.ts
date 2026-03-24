@@ -730,8 +730,53 @@ export async function POST(req: NextRequest) {
         }
         return slide;
       });
+      const curationContent = [
+        `테마: ${curationTheme}`,
+        ...curationFestivals.map((festival, index) =>
+          `${index + 1}. ${festival.title}\n- 일정: ${festival.startDate} ~ ${festival.endDate}\n- 장소: ${festival.location}\n- 장르: ${festival.genre}`,
+        ),
+      ].join("\n\n");
+      const caption = mappedSlides.length > 0
+        ? await generateCaptionFromSlides({
+          slides: mappedSlides,
+          content: curationContent,
+          style,
+          target,
+          aspectRatio,
+          genre,
+          source,
+          sourceLabel,
+          tone,
+          captionStyle,
+          angleHook,
+        })
+        : "";
 
-      return NextResponse.json({ slides: mappedSlides, provider: result.provider, mode: "curation" });
+      let draftId: string | null = null;
+      if (mappedSlides.length > 0) {
+        try {
+          draftId = await createDraftCardnews({
+            uid,
+            slides: mappedSlides,
+            caption,
+            content: curationContent,
+            style,
+            target,
+            aspectRatio,
+            genre,
+            source,
+            sourceLabel,
+            imageUrl: curationFestivals[0]?.imageUrl,
+            tone,
+            captionStyle,
+            slideCount: mappedSlides.length,
+          });
+        } catch (draftError) {
+          console.warn("Failed to persist curation cardnews draft:", draftError);
+        }
+      }
+
+      return NextResponse.json({ slides: mappedSlides, caption, draftId, provider: result.provider, mode: "curation" });
     }
 
     if (!content) {

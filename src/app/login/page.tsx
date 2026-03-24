@@ -76,6 +76,8 @@ export default function LoginPage() {
       setInfoMessage("이메일 인증 완료 후에만 대시보드에 접근할 수 있습니다.");
     } else if (params.get("verify") === "send_failed") {
       setInfoMessage("인증 메일 전송에 실패했습니다. 도메인 설정과 스팸함을 확인해주세요.");
+    } else if (params.get("auth") === "timeout") {
+      setInfoMessage("로그인 상태 확인이 지연되어 로그인 페이지로 이동했습니다. 다시 로그인해 주세요.");
     }
     const currentUrl = new URL(window.location.href);
     const isLoopbackHost = ["127.0.0.1", "localhost", "::1", "[::1]"].includes(currentUrl.hostname);
@@ -87,6 +89,7 @@ export default function LoginPage() {
     const url = new URL(window.location.href);
     url.searchParams.delete("verified");
     url.searchParams.delete("verify");
+    url.searchParams.delete("auth");
     window.history.replaceState({}, "", url.toString());
   }, []);
 

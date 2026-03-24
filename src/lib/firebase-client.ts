@@ -1,5 +1,11 @@
 import { initializeApp, getApps } from "firebase/app";
-import { getAuth, type Auth } from "firebase/auth";
+import {
+  browserLocalPersistence,
+  getAuth,
+  inMemoryPersistence,
+  setPersistence,
+  type Auth,
+} from "firebase/auth";
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || "",
@@ -23,3 +29,18 @@ if (isFirebaseClientConfigured) {
 }
 
 export const auth: Auth | null = app ? getAuth(app) : null;
+
+let persistenceReadyPromise: Promise<void> = Promise.resolve();
+
+if (auth && typeof window !== "undefined") {
+  persistenceReadyPromise = setPersistence(auth, browserLocalPersistence)
+    .catch((error) => {
+      console.warn("Failed to enable browser local auth persistence. Falling back to memory persistence.", error);
+      return setPersistence(auth, inMemoryPersistence);
+    })
+    .catch((fallbackError) => {
+      console.warn("Failed to configure Firebase auth persistence.", fallbackError);
+    });
+}
+
+export const authPersistenceReady = persistenceReadyPromise;

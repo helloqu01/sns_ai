@@ -12,8 +12,10 @@ export interface Slide {
     title: string;
     content?: string;
     body?: string;
+    keywords?: string;
     image?: string;
     renderedImageUrl?: string;
+    textPosition?: "top" | "center" | "bottom";
 }
 
 interface CarouselPreviewProps {

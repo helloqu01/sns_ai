@@ -3,7 +3,7 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { User } from "firebase/auth";
 import { onAuthStateChanged, signOut as firebaseSignOut } from "firebase/auth";
-import { auth } from "@/lib/firebase-client";
+import { auth, authPersistenceReady } from "@/lib/firebase-client";
 
 type AuthContextValue = {
   user: User | null;
@@ -25,6 +25,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const firebaseAuth = auth;
 
     let active = true;
+    let unsubscribe: (() => void) | null = null;
     const safetyTimeoutId = setTimeout(() => {
       if (!active) return;
       console.warn("Auth state check timed out; forcing loading=false.");
@@ -32,37 +33,41 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setLoading(false);
     }, 6000);
 
-    try {
-      const unsubscribe = onAuthStateChanged(
-        firebaseAuth,
-        (nextUser) => {
-          if (!active) return;
-          clearTimeout(safetyTimeoutId);
-          setUser(nextUser);
-          setLoading(false);
-        },
-        (error) => {
-          if (!active) return;
-          clearTimeout(safetyTimeoutId);
-          console.error("Auth state check failed:", error);
-          setUser(firebaseAuth.currentUser);
-          setLoading(false);
-        },
-      );
-
-      return () => {
-        active = false;
+    void authPersistenceReady
+      .then(() => {
+        if (!active) return;
+        unsubscribe = onAuthStateChanged(
+          firebaseAuth,
+          (nextUser) => {
+            if (!active) return;
+            clearTimeout(safetyTimeoutId);
+            setUser(nextUser);
+            setLoading(false);
+          },
+          (error) => {
+            if (!active) return;
+            clearTimeout(safetyTimeoutId);
+            console.error("Auth state check failed:", error);
+            setUser(firebaseAuth.currentUser);
+            setLoading(false);
+          },
+        );
+      })
+      .catch((error) => {
+        if (!active) return;
         clearTimeout(safetyTimeoutId);
-        unsubscribe();
-      };
-    } catch (error) {
+        console.error("Auth subscription setup failed:", error);
+        setUser(firebaseAuth.currentUser);
+        setLoading(false);
+      });
+
+    return () => {
+      active = false;
       clearTimeout(safetyTimeoutId);
-      console.error("Auth subscription setup failed:", error);
-      setLoading(false);
-      return () => {
-        active = false;
-      };
-    }
+      if (unsubscribe) {
+        unsubscribe();
+      }
+    };
   }, []);
 
   const value = useMemo<AuthContextValue>(() => ({

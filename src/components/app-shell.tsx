@@ -29,6 +29,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
     return localStorage.getItem("app_theme") === "dark" ? "dark" : "light";
   });
+  const [authCheckTimedOut, setAuthCheckTimedOut] = useState(false);
 
   const isLoginPage = pathname === "/login";
   const effectiveUser = user ?? auth?.currentUser ?? null;
@@ -43,6 +44,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("app_theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    if (isLoginPage) {
+      setAuthCheckTimedOut(false);
+      return;
+    }
+    if (!loading) {
+      setAuthCheckTimedOut(false);
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setAuthCheckTimedOut(true);
+      router.replace("/login?auth=timeout");
+    }, 8000);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [isLoginPage, loading, router]);
 
   const handleSidebarToggle = useCallback(() => {
     setIsSidebarCollapsed((prev) => !prev);
@@ -89,7 +110,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   if (loading || !effectiveUser || !isVerifiedUser) {
     return (
       <div className="app-shell-bg flex min-h-screen items-center justify-center transition-colors duration-300">
-        <div className="text-sm font-bold text-slate-400">로그인 확인 중...</div>
+        <div className="text-sm font-bold text-slate-400">
+          {authCheckTimedOut ? "로그인 확인이 지연되어 로그인 페이지로 이동 중입니다..." : "로그인 확인 중..."}
+        </div>
       </div>
     );
   }

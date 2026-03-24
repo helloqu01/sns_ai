@@ -14,6 +14,7 @@ type CardnewsSlide = {
   title: string;
   body: string;
   keywords?: string;
+  image?: string | null;
   renderedImageUrl?: string | null;
 };
 
@@ -84,12 +85,14 @@ const toSlide = (value: unknown): CardnewsSlide | null => {
   const title = asNullableString(source.title);
   const body = asNullableString(source.body);
   const keywords = asNullableString(source.keywords);
+  const image = asNullableString(source.image);
   const renderedImageUrl = asNullableString(source.renderedImageUrl);
-  if (title === null && body === null && keywords === null && renderedImageUrl === null) return null;
+  if (title === null && body === null && keywords === null && image === null && renderedImageUrl === null) return null;
   return {
     title: title ?? "",
     body: body ?? "",
     keywords: keywords ?? "",
+    image,
     renderedImageUrl,
   };
 };
@@ -101,10 +104,11 @@ const toSlides = (value: unknown): CardnewsSlide[] => {
     .filter((slide): slide is CardnewsSlide => Boolean(slide));
 };
 
-const stripRenderedImageUrls = (slides: CardnewsSlide[]) => slides.map(({ title, body, keywords }) => ({
+const stripRenderedImageUrls = (slides: CardnewsSlide[]) => slides.map(({ title, body, keywords, image }) => ({
   title,
   body,
   keywords,
+  image,
 }));
 
 const getUidFromRequest = async (req: NextRequest) => {

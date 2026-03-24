@@ -143,6 +143,7 @@ type SavedCardnewsSlide = {
   title?: string | null;
   body?: string | null;
   keywords?: string | null;
+  image?: string | null;
   renderedImageUrl?: string | null;
 };
 
@@ -335,6 +336,11 @@ export default function ContentStudio(props: ContentStudioProps) {
   const [selectedSavedContentId, setSelectedSavedContentId] = useState<string | null>(null);
   const [isSavedContentLoading, setIsSavedContentLoading] = useState(false);
   const [savedContentError, setSavedContentError] = useState<string | null>(null);
+  const [activeSlideEditorIndex, setActiveSlideEditorIndex] = useState(0);
+  const [isDraftDirty, setIsDraftDirty] = useState(false);
+  const [isDraftSaving, setIsDraftSaving] = useState(false);
+  const [draftSaveError, setDraftSaveError] = useState<string | null>(null);
+  const [draftSavedAt, setDraftSavedAt] = useState<number | null>(null);
   const { user, loading: authLoading } = useAuth();
 
   // --- Festivals State ---
@@ -350,6 +356,8 @@ export default function ContentStudio(props: ContentStudioProps) {
   const autoTriggeredRef = useRef(false);
   const autoCurationTriggeredRef = useRef(false);
   const autoCurationGenerateRef = useRef(false);
+  const draftAutoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const draftSaveInFlightRef = useRef(false);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const autoCurationIdsKey = useMemo(
     () => autoCurationIds.map((id) => id.trim()).filter(Boolean).join('|'),
@@ -405,6 +413,144 @@ export default function ContentStudio(props: ContentStudioProps) {
     return headers;
   }, [user]);
 
+  const normalizeSlidesForPersistence = useCallback((slides: Slide[]) => (
+    slides.map((slide, index) => ({
+      title:
+        typeof slide.title === 'string' && slide.title.trim().length > 0
+          ? slide.title.trim()
+          : `슬라이드 ${index + 1}`,
+      body:
+        typeof slide.body === 'string'
+          ? slide.body
+          : (typeof slide.content === 'string' ? slide.content : ''),
+      keywords: typeof slide.keywords === 'string' ? slide.keywords : '',
+      image:
+        typeof slide.image === 'string' && slide.image.trim().length > 0
+          ? slide.image.trim()
+          : null,
+      renderedImageUrl:
+        typeof slide.renderedImageUrl === 'string' && slide.renderedImageUrl.trim().length > 0
+          ? slide.renderedImageUrl.trim()
+          : null,
+    }))
+  ), []);
+
+  const handleCaptionTextChange = useCallback((nextText: string) => {
+    setCaptionText(nextText);
+    if (generatedSlides.length > 0) {
+      setIsDraftDirty(true);
+      setDraftSaveError(null);
+    }
+  }, [generatedSlides.length]);
+
+  const handleRatioChange = useCallback((nextRatio: string) => {
+    setRatio(nextRatio);
+    if (generatedSlides.length > 0) {
+      setIsDraftDirty(true);
+      setDraftSaveError(null);
+    }
+  }, [generatedSlides.length]);
+
+  const updateGeneratedSlideField = useCallback((
+    index: number,
+    field: 'title' | 'body' | 'keywords' | 'image',
+    value: string,
+  ) => {
+    setGeneratedSlides((prev) => prev.map((slide, slideIndex) => {
+      if (slideIndex !== index) return slide;
+      if (field === 'title') {
+        return { ...slide, title: value };
+      }
+      if (field === 'body') {
+        return { ...slide, body: value };
+      }
+      if (field === 'keywords') {
+        return { ...slide, keywords: value };
+      }
+
+      const nextImage = value.trim();
+      return {
+        ...slide,
+        image: value,
+        renderedImageUrl: nextImage ? undefined : slide.renderedImageUrl,
+      };
+    }));
+    setIsDraftDirty(true);
+    setDraftSaveError(null);
+  }, []);
+
+  const saveDraftEdits = useCallback(async () => {
+    if (!user || !draftId) return false;
+    if (draftSaveInFlightRef.current) return false;
+    draftSaveInFlightRef.current = true;
+    setIsDraftSaving(true);
+    setDraftSaveError(null);
+
+    try {
+      const token = await user.getIdToken();
+      const url = new URL('/api/cardnews/item', window.location.origin);
+      url.searchParams.set('id', draftId);
+      const normalizedSlides = normalizeSlidesForPersistence(generatedSlides);
+      const response = await fetch(url.toString(), {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          content: inputText,
+          style,
+          target,
+          genre,
+          source,
+          sourceLabel,
+          imageUrl: imageUrl || null,
+          aspectRatio: ratio,
+          tone: captionTone,
+          captionStyle: captionStyleMode || null,
+          caption: captionText,
+          slides: normalizedSlides,
+        }),
+      });
+      const data = (await response.json().catch(() => ({}))) as {
+        item?: SavedCardnewsItem;
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(typeof data.error === 'string' ? data.error : '초안 저장에 실패했습니다.');
+      }
+
+      setIsDraftDirty(false);
+      setDraftSavedAt(Date.now());
+      if (typeof data.item?.id === 'string' && data.item.id.trim().length > 0 && data.item.status === 'draft') {
+        setDraftId(data.item.id);
+      }
+      return true;
+    } catch (error) {
+      setDraftSaveError(error instanceof Error ? error.message : '초안 저장에 실패했습니다.');
+      return false;
+    } finally {
+      draftSaveInFlightRef.current = false;
+      setIsDraftSaving(false);
+    }
+  }, [
+    captionStyleMode,
+    captionText,
+    captionTone,
+    draftId,
+    generatedSlides,
+    genre,
+    imageUrl,
+    inputText,
+    normalizeSlidesForPersistence,
+    ratio,
+    source,
+    sourceLabel,
+    style,
+    target,
+    user,
+  ]);
+
   const loadSavedContentToPreview = useCallback(async (cardnewsId: string) => {
     if (!user) return;
 
@@ -425,6 +571,7 @@ export default function ContentStudio(props: ContentStudioProps) {
       const item = data.item;
       const nextSlides = Array.isArray(item.slides)
         ? item.slides.map((slide, index) => ({
+          keywords: typeof slide?.keywords === 'string' ? slide.keywords : '',
           renderedImageUrl:
             typeof slide?.renderedImageUrl === 'string' && slide.renderedImageUrl.trim().length > 0
               ? slide.renderedImageUrl.trim()
@@ -432,8 +579,12 @@ export default function ContentStudio(props: ContentStudioProps) {
           id: `${item.id}-${index + 1}`,
           title: typeof slide?.title === 'string' && slide.title.trim() ? slide.title.trim() : `슬라이드 ${index + 1}`,
           body: typeof slide?.body === 'string' ? slide.body : '',
+          content: typeof slide?.body === 'string' ? slide.body : '',
           image:
-            (typeof slide?.renderedImageUrl === 'string' && slide.renderedImageUrl.trim().length > 0
+            (typeof slide?.image === 'string' && slide.image.trim().length > 0
+              ? slide.image.trim()
+              : undefined)
+            || (typeof slide?.renderedImageUrl === 'string' && slide.renderedImageUrl.trim().length > 0
               ? slide.renderedImageUrl.trim()
               : undefined)
             || (index === 0 && typeof item.imageUrl === 'string' ? item.imageUrl : undefined),
@@ -478,6 +629,9 @@ export default function ContentStudio(props: ContentStudioProps) {
           : '',
       );
       setDraftId(item.status === 'draft' ? item.id : null);
+      setIsDraftDirty(false);
+      setDraftSaveError(null);
+      setDraftSavedAt(null);
     } catch (error) {
       setSavedContentError(error instanceof Error ? error.message : '저장된 콘텐츠를 불러오지 못했습니다.');
     } finally {
@@ -622,6 +776,39 @@ export default function ContentStudio(props: ContentStudioProps) {
     if (authLoading || !user) return;
     void loadSavedContentToPreview(selectedCardnewsId);
   }, [authLoading, loadSavedContentToPreview, selectedCardnewsId, user]);
+
+  useEffect(() => {
+    setActiveSlideEditorIndex((prev) => {
+      if (generatedSlides.length === 0) return 0;
+      return Math.min(prev, generatedSlides.length - 1);
+    });
+  }, [generatedSlides.length]);
+
+  useEffect(() => () => {
+    if (draftAutoSaveTimerRef.current) {
+      clearTimeout(draftAutoSaveTimerRef.current);
+      draftAutoSaveTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isDraftDirty || !draftId || !user) {
+      return;
+    }
+    if (draftAutoSaveTimerRef.current) {
+      clearTimeout(draftAutoSaveTimerRef.current);
+    }
+    draftAutoSaveTimerRef.current = setTimeout(() => {
+      void saveDraftEdits();
+    }, 1200);
+
+    return () => {
+      if (draftAutoSaveTimerRef.current) {
+        clearTimeout(draftAutoSaveTimerRef.current);
+        draftAutoSaveTimerRef.current = null;
+      }
+    };
+  }, [draftId, isDraftDirty, saveDraftEdits, user]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -1071,6 +1258,10 @@ export default function ContentStudio(props: ContentStudioProps) {
       }
 
       setCaptionText(typeof data?.caption === 'string' ? data.caption : '');
+      if (draftId) {
+        setIsDraftDirty(true);
+        setDraftSaveError(null);
+      }
     } catch (error) {
       console.error(error);
       alert('캡션 생성 중 오류가 발생했습니다.');
@@ -1129,6 +1320,9 @@ export default function ContentStudio(props: ContentStudioProps) {
       setGeneratedSlides(data.slides || []);
       setCaptionText(typeof data.caption === 'string' ? data.caption : '');
       setDraftId(typeof data.draftId === 'string' ? data.draftId : null);
+      setIsDraftDirty(false);
+      setDraftSaveError(null);
+      setDraftSavedAt(typeof data.draftId === 'string' ? Date.now() : null);
       setShowAngleSelector(false);
       if (Array.isArray(data.slides) && data.slides.length > 0 && data.draftId) {
         setDraftCardnewsCount((prev) => (typeof prev === 'number' ? prev + 1 : 1));
@@ -1174,6 +1368,13 @@ export default function ContentStudio(props: ContentStudioProps) {
         if (data.slides) {
           setGeneratedSlides(data.slides);
         }
+        if (typeof data.caption === 'string') {
+          setCaptionText(data.caption);
+        }
+        setDraftId(typeof data.draftId === 'string' ? data.draftId : null);
+        setIsDraftDirty(false);
+        setDraftSaveError(null);
+        setDraftSavedAt(typeof data.draftId === 'string' ? Date.now() : null);
       } catch (e) {
         console.error(e);
       } finally {
@@ -1245,6 +1446,9 @@ export default function ContentStudio(props: ContentStudioProps) {
         if (typeof data?.draftId === 'string') {
           setDraftId(data.draftId);
         }
+        setIsDraftDirty(false);
+        setDraftSaveError(null);
+        setDraftSavedAt(typeof data?.draftId === 'string' ? Date.now() : null);
       } catch (error) {
         console.error(error);
       } finally {
@@ -1278,17 +1482,20 @@ export default function ContentStudio(props: ContentStudioProps) {
     }
   };
 
+  const activeSlide = generatedSlides[activeSlideEditorIndex] ?? null;
+  const draftSavedTimeText = draftSavedAt
+    ? new Date(draftSavedAt).toLocaleTimeString('ko-KR', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    })
+    : null;
+
   const hasPublishablePreview = generatedSlides.length > 0 && captionText.trim().length > 0;
   const buildExternalPublishPayload = useCallback((): ContentStudioPublishPayload => {
-    const normalizedSlides = generatedSlides.map((slide, index) => ({
-      title: (slide.title || `슬라이드 ${index + 1}`).trim(),
-      body: (slide.body || slide.content || '').trim(),
-      content: (slide.content || '').trim(),
-      image: typeof slide.image === 'string' && slide.image.trim().length > 0 ? slide.image.trim() : null,
-      renderedImageUrl:
-        typeof slide.renderedImageUrl === 'string' && slide.renderedImageUrl.trim().length > 0
-          ? slide.renderedImageUrl.trim()
-          : null,
+    const normalizedSlides = normalizeSlidesForPersistence(generatedSlides).map((slide) => ({
+      ...slide,
+      content: slide.body.trim(),
     }));
 
     const firstLineTitle = inputText
@@ -1310,7 +1517,7 @@ export default function ContentStudio(props: ContentStudioProps) {
       slideImageUrls,
       slides: normalizedSlides,
     };
-  }, [captionText, generatedSlides, imageUrl, inputText, ratio, source, sourceLabel]);
+  }, [captionText, generatedSlides, imageUrl, inputText, normalizeSlidesForPersistence, ratio, source, sourceLabel]);
 
   const handleSendToCanva = async () => {
     if (!generatedSlides.length) return;
@@ -1463,7 +1670,7 @@ export default function ContentStudio(props: ContentStudioProps) {
                       <button
                         key={item}
                         type="button"
-                        onClick={() => setRatio(item)}
+                        onClick={() => handleRatioChange(item)}
                         className={cn(
                           'rounded-xl border px-3 py-2 text-xs font-black transition-all',
                           ratio === item
@@ -1789,7 +1996,7 @@ export default function ContentStudio(props: ContentStudioProps) {
                     </div>
                     <CaptionEditor
                       text={captionText}
-                      onTextChange={setCaptionText}
+                      onTextChange={handleCaptionTextChange}
                       tone={captionTone}
                       onToneChange={setCaptionTone}
                       styleMode={captionStyleMode}
@@ -1800,6 +2007,131 @@ export default function ContentStudio(props: ContentStudioProps) {
                       compact
                       embedded
                     />
+                  </div>
+
+                  <div className="rounded-[2rem] border border-white/80 bg-white/82 p-5 shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
+                    <div className="mb-4 flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-slate-400">Slide Editor</div>
+                        <p className="mt-1 text-sm font-black text-slate-900">슬라이드를 브라우저에서 바로 수정</p>
+                      </div>
+                      <div className="text-right">
+                        <div
+                          className={cn(
+                            'inline-flex rounded-full border px-2.5 py-1 text-[10px] font-black',
+                            isDraftSaving
+                              ? 'border-sky-100 bg-sky-50 text-sky-700'
+                              : isDraftDirty
+                                ? 'border-amber-100 bg-amber-50 text-amber-700'
+                                : 'border-emerald-100 bg-emerald-50 text-emerald-700',
+                          )}
+                        >
+                          {isDraftSaving ? '자동 저장 중' : isDraftDirty ? '저장 대기' : '저장됨'}
+                        </div>
+                        {draftSavedTimeText && (
+                          <p className="mt-1 text-[10px] font-bold text-slate-400">마지막 저장 {draftSavedTimeText}</p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="grid gap-4 xl:grid-cols-[220px_minmax(0,1fr)]">
+                      <div className="space-y-2">
+                        {generatedSlides.map((slide, index) => {
+                          const isActive = index === activeSlideEditorIndex;
+                          const title = (slide.title || `슬라이드 ${index + 1}`).trim();
+                          const body = (slide.body || slide.content || '').trim();
+                          return (
+                            <button
+                              key={slide.id || `${index}-${title}`}
+                              type="button"
+                              onClick={() => setActiveSlideEditorIndex(index)}
+                              className={cn(
+                                'w-full rounded-xl border px-3 py-2.5 text-left transition-all',
+                                isActive
+                                  ? 'border-pink-400 bg-pink-50 shadow-sm'
+                                  : 'border-slate-200 bg-white hover:border-slate-300',
+                              )}
+                            >
+                              <div className="text-[10px] font-black uppercase tracking-wider text-slate-400">Slide {index + 1}</div>
+                              <div className={cn('mt-1 text-xs font-black', isActive ? 'text-pink-700' : 'text-slate-700')}>
+                                {title || `슬라이드 ${index + 1}`}
+                              </div>
+                              <div className="mt-1 line-clamp-2 text-[11px] font-bold text-slate-500">
+                                {body || '본문을 입력하세요.'}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {activeSlide ? (
+                        <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
+                          <div className="grid gap-3">
+                            <div>
+                              <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">제목</label>
+                              <input
+                                value={activeSlide.title || ''}
+                                onChange={(event) => updateGeneratedSlideField(activeSlideEditorIndex, 'title', event.target.value)}
+                                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700 outline-none transition-all focus:border-pink-300"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">본문</label>
+                              <textarea
+                                value={activeSlide.body || activeSlide.content || ''}
+                                onChange={(event) => updateGeneratedSlideField(activeSlideEditorIndex, 'body', event.target.value)}
+                                rows={4}
+                                className="mt-1 w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700 outline-none transition-all focus:border-pink-300"
+                              />
+                            </div>
+                            <div className="grid gap-3 sm:grid-cols-2">
+                              <div>
+                                <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">키워드</label>
+                                <input
+                                  value={activeSlide.keywords || ''}
+                                  onChange={(event) => updateGeneratedSlideField(activeSlideEditorIndex, 'keywords', event.target.value)}
+                                  placeholder="festival event poster..."
+                                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700 outline-none transition-all focus:border-pink-300"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">배경 이미지 URL</label>
+                                <input
+                                  value={typeof activeSlide.image === 'string' ? activeSlide.image : ''}
+                                  onChange={(event) => updateGeneratedSlideField(activeSlideEditorIndex, 'image', event.target.value)}
+                                  placeholder="https://..."
+                                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700 outline-none transition-all focus:border-pink-300"
+                                />
+                                {typeof activeSlide.renderedImageUrl === 'string' && activeSlide.renderedImageUrl.trim().length > 0 && !activeSlide.image && (
+                                  <p className="mt-1 text-[10px] font-bold text-slate-400">현재 렌더 이미지를 사용 중입니다.</p>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="mt-4 flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => { void saveDraftEdits(); }}
+                              disabled={!draftId || isDraftSaving || !isDraftDirty}
+                              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] font-black text-slate-700 transition-all hover:bg-slate-50 disabled:opacity-50"
+                            >
+                              <Save className={cn('h-3.5 w-3.5', isDraftSaving && 'animate-pulse')} />
+                              초안 저장
+                            </button>
+                            <div className="text-[10px] font-bold text-slate-400">
+                              {draftId ? `Draft ID: ${draftId}` : '초안이 없어 자동 저장이 비활성화됩니다.'}
+                            </div>
+                          </div>
+
+                          {draftSaveError && (
+                            <div className="mt-3 rounded-xl border border-rose-100 bg-rose-50 px-3 py-2 text-[11px] font-bold text-rose-600">
+                              {draftSaveError}
+                            </div>
+                          )}
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
 
                   <div className="overflow-hidden rounded-[2rem] border border-white/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(255,247,250,0.9))] p-5 shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
