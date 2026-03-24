@@ -45,10 +45,29 @@ const getFestivalCache = () => {
   return globalForFestivalCache.__festivalsClientCache;
 };
 
-const getFestivalIdentityKey = (festival: UnifiedFestival) =>
-  typeof festival.sourceUrl === "string" && festival.sourceUrl.trim().length > 0
+const extractFestivalLifeDetailId = (sourceUrl: string) => {
+  try {
+    const parsed = new URL(sourceUrl.trim());
+    if (!parsed.hostname.toLowerCase().includes("festivallife.kr")) return null;
+    const idx = parsed.searchParams.get("idx")?.trim() || "";
+    return idx.length > 0 ? idx : null;
+  } catch {
+    return null;
+  }
+};
+
+const getFestivalIdentityKey = (festival: UnifiedFestival) => {
+  if (festival.source === "FESTIVAL_LIFE" && typeof festival.sourceUrl === "string" && festival.sourceUrl.trim().length > 0) {
+    const detailId = extractFestivalLifeDetailId(festival.sourceUrl);
+    if (detailId) {
+      return `fl-detail:${detailId}`;
+    }
+  }
+
+  return typeof festival.sourceUrl === "string" && festival.sourceUrl.trim().length > 0
     ? `url:${festival.sourceUrl.trim()}`
     : `id:${festival.id}`;
+};
 
 const mergeFestivalLists = (current: UnifiedFestival[], incoming: UnifiedFestival[]) => {
   const merged: UnifiedFestival[] = [];

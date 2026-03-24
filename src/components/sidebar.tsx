@@ -345,10 +345,20 @@ export const Sidebar = React.memo(function Sidebar({ collapsed, onToggle, theme,
       }
 
       try {
-        const token = await user.getIdToken();
+        let token = await user.getIdToken();
+        if (!token || token.split(".").length !== 3) {
+          token = await user.getIdToken(true);
+        }
+        if (!token || token.split(".").length !== 3) {
+          throw new Error("firebase_id_token_invalid");
+        }
+
         const res = await fetch("/api/meta/oauth/session", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
           body: JSON.stringify({ idToken: token }),
         });
         const data = (await res.json().catch(() => ({}))) as { error?: string; detail?: string; session?: string };
@@ -375,8 +385,9 @@ export const Sidebar = React.memo(function Sidebar({ collapsed, onToggle, theme,
           return;
         }
         popup.location.href = oauthStartUrl.toString();
-      } catch {
-        setAccountsError("계정 연결에 실패했습니다.");
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "";
+        setAccountsError(detail ? `계정 연결에 실패했습니다. (${detail})` : "계정 연결에 실패했습니다.");
         setIsConnecting(false);
         setReconnectingAccountId(null);
         if (popup) popup.close();

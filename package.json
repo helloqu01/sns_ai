@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "@opentelemetry/api": "^1.9.0",
     "fast-xml-parser": "^5.3.6",
     "firebase-admin": "^12.7.0",
     "jpeg-js": "^0.4.4",

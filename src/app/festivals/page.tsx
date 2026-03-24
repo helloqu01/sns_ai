@@ -41,7 +41,25 @@ type NaverUpdateSummary = {
     results: NaverUpdateResultItem[];
 };
 
+const extractFestivalLifeDetailId = (sourceUrl: string) => {
+    try {
+        const parsed = new URL(sourceUrl.trim());
+        if (!parsed.hostname.toLowerCase().includes("festivallife.kr")) return null;
+        const idx = parsed.searchParams.get("idx")?.trim() || "";
+        return idx.length > 0 ? idx : null;
+    } catch {
+        return null;
+    }
+};
+
 const getFestivalIdentityKey = (festival: UnifiedFestival) => {
+    if (festival.source === "FESTIVAL_LIFE" && festival.sourceUrl && festival.sourceUrl.trim().length > 0) {
+        const detailId = extractFestivalLifeDetailId(festival.sourceUrl);
+        if (detailId) {
+            return `fl-detail:${detailId}`;
+        }
+    }
+
     if (festival.sourceUrl && festival.sourceUrl.trim().length > 0) {
         return `url:${festival.sourceUrl.trim()}`;
     }

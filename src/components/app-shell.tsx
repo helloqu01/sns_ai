@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { Moon, Sun } from "lucide-react";
 import { Sidebar } from "@/components/sidebar";
 import { useAuth } from "@/components/auth-provider";
+import { auth } from "@/lib/firebase-client";
 import { cn } from "@/lib/utils";
 
 type ThemeMode = "light" | "dark";
@@ -30,7 +31,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   });
 
   const isLoginPage = pathname === "/login";
-  const isVerifiedUser = Boolean(user && (!requireEmailVerification || user.emailVerified));
+  const effectiveUser = user ?? auth?.currentUser ?? null;
+  const isVerifiedUser = Boolean(effectiveUser && (!requireEmailVerification || effectiveUser.emailVerified));
   const appBackgroundClass = "app-shell-bg";
 
   useEffect(() => {
@@ -52,18 +54,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (loading) return;
-    if (!user && !isLoginPage) {
+    if (!effectiveUser && !isLoginPage) {
       router.replace("/login");
       return;
     }
-    if (user && !isVerifiedUser && !isLoginPage) {
+    if (effectiveUser && !isVerifiedUser && !isLoginPage) {
       router.replace("/login?verify=required");
       return;
     }
-    if (user && isVerifiedUser && isLoginPage) {
+    if (effectiveUser && isVerifiedUser && isLoginPage) {
       router.replace("/");
     }
-  }, [loading, user, isLoginPage, isVerifiedUser, router]);
+  }, [effectiveUser, isLoginPage, isVerifiedUser, loading, router]);
 
   if (isLoginPage) {
     return (
@@ -84,7 +86,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     );
   }
 
-  if (loading || !user || !isVerifiedUser) {
+  if (loading || !effectiveUser || !isVerifiedUser) {
     return (
       <div className="app-shell-bg flex min-h-screen items-center justify-center transition-colors duration-300">
         <div className="text-sm font-bold text-slate-400">로그인 확인 중...</div>

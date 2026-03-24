@@ -61,6 +61,7 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<MessageState | null>(null);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
+  const [recommendedLoginUrl, setRecommendedLoginUrl] = useState<string | null>(null);
 
   const getActionCodeSettings = () => ({
     url: toAuthorizedContinueUrl(),
@@ -75,6 +76,13 @@ export default function LoginPage() {
       setInfoMessage("이메일 인증 완료 후에만 대시보드에 접근할 수 있습니다.");
     } else if (params.get("verify") === "send_failed") {
       setInfoMessage("인증 메일 전송에 실패했습니다. 도메인 설정과 스팸함을 확인해주세요.");
+    }
+    const currentUrl = new URL(window.location.href);
+    const isLoopbackHost = ["127.0.0.1", "localhost", "::1", "[::1]"].includes(currentUrl.hostname);
+    if (!isLoopbackHost) {
+      const recommendedUrl = new URL(window.location.href);
+      recommendedUrl.hostname = "127.0.0.1";
+      setRecommendedLoginUrl(recommendedUrl.toString());
     }
     const url = new URL(window.location.href);
     url.searchParams.delete("verified");
@@ -225,6 +233,16 @@ export default function LoginPage() {
             {infoMessage && (
               <div className="mb-5 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-bold text-emerald-700">
                 {infoMessage}
+              </div>
+            )}
+
+            {recommendedLoginUrl && (
+              <div className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-800">
+                현재 주소에서는 Firebase 로그인 제한으로 실패할 수 있습니다.
+                {" "}
+                <a href={recommendedLoginUrl} className="underline decoration-2 underline-offset-2">
+                  127.0.0.1 주소로 다시 접속하기
+                </a>
               </div>
             )}
 

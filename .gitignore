@@ -46,3 +46,8 @@ calendar_data.json
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# firebase generated artifacts
+.firebase/
+firebase-debug.log
+firebase.*.deploy.json

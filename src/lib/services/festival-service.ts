@@ -1,5 +1,6 @@
-import { FestivalDetailSection, UnifiedFestival } from "@/types/festival";
+import { FestivalDetailSection, FestivalSource, UnifiedFestival } from "@/types/festival";
 import { FestivalLifeAdapter } from "../adapters/festival-life-adapter";
+import { MelonTicketAdapter } from "../adapters/melon-ticket-adapter";
 import { NaverSearchAdapter } from "../adapters/naver-search-adapter";
 import { db, isFirebaseConfigured } from "../firebase-admin";
 import { geminiFlashModel } from "../gemini";
@@ -102,7 +103,8 @@ export type FestivalNaverUpdateResult = {
 };
 
 export class FestivalService {
-    private adapters = [new FestivalLifeAdapter(), new NaverSearchAdapter()];
+    private adapters = [new FestivalLifeAdapter(), new MelonTicketAdapter(), new NaverSearchAdapter()];
+    private primarySources: FestivalSource[] = ["FESTIVAL_LIFE", "MELON_TICKET"];
     private memoryCache: FestivalCacheState | null = null;
     private firestoreLoadInFlight: Promise<UnifiedFestival[]> | null = null;
     private refreshInFlight: Promise<UnifiedFestival[]> | null = null;
@@ -115,6 +117,19 @@ export class FestivalService {
         const raw = Number(process.env.FESTIVAL_CACHE_MS ?? defaultMs);
         if (!Number.isFinite(raw)) return defaultMs;
         return Math.min(Math.max(raw, minMs), maxMs);
+    }
+
+    private getPrimarySources(): FestivalSource[] {
+        const unique = Array.from(new Set(this.primarySources.filter(Boolean)));
+        return unique.length > 0 ? unique : ["FESTIVAL_LIFE"];
+    }
+
+    private applyPrimarySourceFilter(query: FirebaseFirestore.Query): FirebaseFirestore.Query {
+        const sources = this.getPrimarySources().slice(0, 10);
+        if (sources.length === 1) {
+            return query.where("source", "==", sources[0]);
+        }
+        return query.where("source", "in", sources);
     }
 
     private getTodayKST(): string {
@@ -219,11 +234,30 @@ export class FestivalService {
         }
     }
 
+    private extractFestivalLifeDetailId(sourceUrl: string): string | null {
+        try {
+            const parsed = new URL(sourceUrl.trim());
+            if (!parsed.hostname.toLowerCase().includes("festivallife.kr")) return null;
+            const idx = parsed.searchParams.get("idx")?.trim() || "";
+            return idx.length > 0 ? idx : null;
+        } catch {
+            return null;
+        }
+    }
+
     private buildFestivalDedupeKey(festival: Partial<UnifiedFestival>): string | null {
         const source = typeof festival.source === "string" ? festival.source : "";
         if (!source) return null;
 
         if (typeof festival.sourceUrl === "string" && festival.sourceUrl.trim().length > 0) {
+            if (source === "FESTIVAL_LIFE") {
+                const festivalLifeDetailId = this.extractFestivalLifeDetailId(festival.sourceUrl);
+                if (festivalLifeDetailId) {
+                    // FESTIVAL_LIFE has duplicate listings across /concert and /gigs with the same idx.
+                    // Use idx as canonical identity to avoid exposing duplicated cards.
+                    return `${source}|detail:${festivalLifeDetailId}`;
+                }
+            }
             return `${source}|url:${this.normalizeSourceUrl(festival.sourceUrl)}`;
         }
 
@@ -631,9 +665,9 @@ ${sourceContext}
             };
         }
 
-        const snapshot = await db.collection("festivals")
-            .where("source", "==", "FESTIVAL_LIFE")
-            .get();
+        const snapshot = await this.applyPrimarySourceFilter(
+            db.collection("festivals"),
+        ).get();
 
         if (snapshot.empty) {
             return {
@@ -680,7 +714,9 @@ ${sourceContext}
         });
 
         return {
-            festivals: this.sortFestivals(festivals.filter((festival) => this.isValidFestival(festival))),
+            festivals: this.dedupeFestivals(
+                festivals.filter((festival) => this.isValidFestival(festival)),
+            ).deduplicatedFestivals,
             expiresAt: Date.now() + this.cacheTtlMs,
             lastUpdated,
         };
@@ -734,8 +770,9 @@ ${sourceContext}
             return { docIdByDedupeKey, duplicateDocIds };
         }
 
-        const snapshot = await db.collection("festivals")
-            .where("source", "==", "FESTIVAL_LIFE")
+        const snapshot = await this.applyPrimarySourceFilter(
+            db.collection("festivals"),
+        )
             .select("source", "sourceUrl", "title", "location", "startDate", "endDate")
             .get();
 
@@ -1023,6 +1060,8 @@ ${sourceContext}
             console.warn("Failed to refresh festival cache after festival sync.");
         }
 
+        const deduplicatedFilteredFestivals = this.dedupeFestivals(filteredFestivals).deduplicatedFestivals;
+
         return {
             targetDates: normalizedTargetDates,
             crawledCount: crawledFestivals.length,
@@ -1031,7 +1070,7 @@ ${sourceContext}
             skippedDuplicateCount: upsertSummary.skippedDuplicateCount,
             upsertedCount: upsertSummary.upsertedCount,
             cleanedDuplicateDocCount: upsertSummary.cleanedDuplicateDocCount,
-            festivals: this.sortFestivals(filteredFestivals),
+            festivals: deduplicatedFilteredFestivals,
         };
     }
 

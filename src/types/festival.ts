@@ -1,4 +1,4 @@
-export type FestivalSource = 'KOPIS' | 'FESTIVAL_LIFE' | 'WEB_CRAWL' | 'MANUAL';
+export type FestivalSource = 'KOPIS' | 'FESTIVAL_LIFE' | 'MELON_TICKET' | 'WEB_CRAWL' | 'MANUAL';
 
 export interface FestivalDetailSection {
     label: string;

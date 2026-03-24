@@ -14,8 +14,8 @@ type AuthContextValue = {
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(Boolean(auth));
+  const [user, setUser] = useState<User | null>(() => auth?.currentUser ?? null);
+  const [loading, setLoading] = useState(Boolean(auth && !auth.currentUser));
 
   useEffect(() => {
     if (!auth) {
@@ -27,6 +27,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const safetyTimeoutId = setTimeout(() => {
       if (!active) return;
       console.warn("Auth state check timed out; forcing loading=false.");
+      setUser(auth.currentUser);
       setLoading(false);
     }, 6000);
 
@@ -43,6 +44,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (!active) return;
           clearTimeout(safetyTimeoutId);
           console.error("Auth state check failed:", error);
+          setUser(auth.currentUser);
           setLoading(false);
         },
       );
