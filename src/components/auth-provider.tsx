@@ -22,18 +22,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setLoading(false);
       return;
     }
+    const firebaseAuth = auth;
 
     let active = true;
     const safetyTimeoutId = setTimeout(() => {
       if (!active) return;
       console.warn("Auth state check timed out; forcing loading=false.");
-      setUser(auth.currentUser);
+      setUser(firebaseAuth.currentUser);
       setLoading(false);
     }, 6000);
 
     try {
       const unsubscribe = onAuthStateChanged(
-        auth,
+        firebaseAuth,
         (nextUser) => {
           if (!active) return;
           clearTimeout(safetyTimeoutId);
@@ -44,7 +45,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (!active) return;
           clearTimeout(safetyTimeoutId);
           console.error("Auth state check failed:", error);
-          setUser(auth.currentUser);
+          setUser(firebaseAuth.currentUser);
           setLoading(false);
         },
       );
