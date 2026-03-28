@@ -1,6 +1,8 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { Eye, LayoutTemplate, Pencil, RefreshCw, Save, Search, Trash2, X } from "lucide-react";
 import { useAuth } from "@/components/auth-provider";
 import { CarouselPreview, type Slide as CarouselSlide } from "@/components/carousel-preview";
@@ -98,6 +100,7 @@ const cloneDetail = (item: CardnewsDetail): CardnewsDetail => ({
 
 export default function GalleryPage() {
   const { user } = useAuth();
+  const searchParams = useSearchParams();
   const [items, setItems] = useState<CardnewsSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -352,6 +355,12 @@ export default function GalleryPage() {
 
   const isReady = Boolean(user);
   const modalOpen = Boolean(selectedId);
+  const buildReeditHref = useCallback((id: string) => `/instagram-ai?cardnewsId=${encodeURIComponent(id)}`, []);
+  const statusFromQuery = useMemo<CardnewsStatusFilter>(() => {
+    const raw = searchParams.get("status");
+    if (raw === "draft" || raw === "published") return raw;
+    return "all";
+  }, [searchParams]);
 
   useEffect(() => {
     if (!user) {
@@ -360,10 +369,10 @@ export default function GalleryPage() {
       setError(null);
       return;
     }
-    setStatus("all");
+    setStatus(statusFromQuery);
     setPage(1);
-    void fetchList({ page: 1, status: "all" });
-  }, [fetchList, user]);
+    void fetchList({ page: 1, status: statusFromQuery });
+  }, [fetchList, statusFromQuery, user]);
 
   return (
     <div className="mx-auto max-w-[1400px] min-h-screen pb-20">
@@ -424,6 +433,12 @@ export default function GalleryPage() {
           </div>
         </div>
 
+        {status === "draft" && (
+          <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-800">
+            초안은 재편집 버튼으로 카드뉴스 편집기로 바로 이어서 작업할 수 있습니다.
+          </div>
+        )}
+
         {!isReady && (
           <div className="mt-6 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm font-bold text-slate-400">
             로그인 후 카드뉴스 갤러리를 확인할 수 있습니다.
@@ -450,16 +465,16 @@ export default function GalleryPage() {
 
         {isReady && visibleItems.length > 0 && (
           <div className="mt-6 overflow-hidden rounded-3xl border border-slate-200">
-            <div className="grid grid-cols-[minmax(0,1fr)_92px_140px_90px_110px] gap-0 bg-slate-50 px-5 py-3 text-[11px] font-black uppercase tracking-widest text-slate-400">
+            <div className="grid grid-cols-[minmax(0,1fr)_92px_140px_90px_220px] gap-0 bg-slate-50 px-5 py-3 text-[11px] font-black uppercase tracking-widest text-slate-400">
               <div>제목</div>
               <div className="text-center">상태</div>
               <div className="text-center">업데이트</div>
               <div className="text-center">슬라이드</div>
-              <div className="text-center">상세보기</div>
+              <div className="text-center">액션</div>
             </div>
             <div className="divide-y divide-slate-100 bg-white">
               {visibleItems.map((item) => (
-                <div key={item.id} className="grid grid-cols-[minmax(0,1fr)_92px_140px_90px_110px] items-center gap-0 px-5 py-4">
+                <div key={item.id} className="grid grid-cols-[minmax(0,1fr)_92px_140px_90px_220px] items-center gap-0 px-5 py-4">
                   <div className="min-w-0">
                     <div className="truncate text-sm font-black text-slate-900">{item.title}</div>
                     <div className="mt-1 truncate text-xs font-bold text-slate-400">{item.id}</div>
@@ -473,7 +488,7 @@ export default function GalleryPage() {
                     {formatDateTime(item.updatedAt)}
                   </div>
                   <div className="text-center text-xs font-black text-slate-700">{item.slideCount}</div>
-                  <div className="text-center">
+                  <div className="flex items-center justify-center gap-2">
                     <button
                       onClick={() => void openDetail(item.id)}
                       className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50"
@@ -481,6 +496,15 @@ export default function GalleryPage() {
                       <Eye className="h-3.5 w-3.5" />
                       상세
                     </button>
+                    {item.status === "draft" && (
+                      <Link
+                        href={buildReeditHref(item.id)}
+                        className="inline-flex items-center gap-1 rounded-xl bg-pink-600 px-3 py-2 text-xs font-black text-white hover:bg-pink-700"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                        재편집
+                      </Link>
+                    )}
                   </div>
                 </div>
               ))}
@@ -713,6 +737,15 @@ export default function GalleryPage() {
             <div className="flex items-center justify-between border-t border-slate-100 px-6 py-4">
               <div className="text-xs font-bold text-slate-400">{selectedId}</div>
               <div className="flex items-center gap-2">
+                {draftDetail?.status === "draft" && selectedId && (
+                  <Link
+                    href={buildReeditHref(selectedId)}
+                    className="inline-flex items-center gap-2 rounded-xl bg-pink-600 px-4 py-2 text-xs font-black text-white hover:bg-pink-700"
+                  >
+                    <Pencil className="h-4 w-4" />
+                    편집기에서 재편집
+                  </Link>
+                )}
                 {!editMode && (
                   <button
                     onClick={() => setEditMode(true)}

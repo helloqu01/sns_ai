@@ -247,17 +247,22 @@ export async function POST(req: NextRequest) {
 
   let cleanupUid: string | null = null;
   let tempPublishAssetId: string | null = null;
+  let stage = "request:init";
 
   try {
+    stage = "auth:resolve-user";
     const uid = await getMetaRequestUid(req);
     if (!uid) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     cleanupUid = uid;
 
+    stage = "request:parse-origin";
     const requestOrigin = new URL(req.url).origin;
+    stage = "request:parse-body";
+    const rawBody = await req.json().catch(() => ({}));
 
-    const body = (await req.json()) as {
+    const body = (rawBody && typeof rawBody === "object" ? rawBody : {}) as {
       caption?: unknown;
       imageUrl?: unknown;
       slideImageUrls?: unknown;
@@ -282,6 +287,7 @@ export async function POST(req: NextRequest) {
     const scheduledFor = asNonEmptyString(body.scheduledFor);
     const tentativePublishAssetId = slides.length > 0 ? `publish-${randomUUID()}` : null;
     tempPublishAssetId = tentativePublishAssetId;
+    stage = "slides:materialize";
     const materialized = slides.length > 0 && tentativePublishAssetId
       ? await materializeCardnewsSlides({
           uid,
@@ -348,6 +354,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    stage = "record:create";
     const record = await createInstagramPublishingRecord(
       uid,
       {
@@ -372,7 +379,7 @@ export async function POST(req: NextRequest) {
     if (cleanupUid && tempPublishAssetId) {
       await deleteCardnewsSlideAssets(cleanupUid, tempPublishAssetId).catch(() => undefined);
     }
-    console.error("Instagram publish create failed:", error);
+    console.error(`Instagram publish create failed at ${stage}:`, error);
     const message = error instanceof Error ? error.message : "Failed to create instagram publishing record";
     return NextResponse.json({ error: message }, { status: 500 });
   }

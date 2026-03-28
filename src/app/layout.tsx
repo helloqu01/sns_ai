@@ -57,16 +57,7 @@ const DEV_BROWSER_RECOVERY_SCRIPT = `
     var touched = counts.some(function (count) { return count > 0; });
     if (touched) {
       window.location.reload();
-      return;
     }
-
-    if (window.location.pathname === "/login") return;
-    window.setTimeout(function () {
-      var text = document.body && document.body.textContent ? document.body.textContent : "";
-      if (text.indexOf("로그인 확인 중") !== -1) {
-        window.location.replace("/login?auth=recovery");
-      }
-    }, 7000);
   });
 })();
 `;

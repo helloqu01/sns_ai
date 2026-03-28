@@ -174,6 +174,18 @@ const getCaptionStyleGuide = (captionStyle?: string) => {
   }
 };
 
+const sanitizeSlidesForFirestore = (slides: unknown[]) => slides.map((slide) => {
+  if (!slide || typeof slide !== "object") return slide;
+  const source = slide as Record<string, unknown>;
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (value !== undefined) {
+      sanitized[key] = value;
+    }
+  }
+  return sanitized;
+});
+
 const createDraftCardnews = async (payload: {
   uid: string;
   slides: unknown[];
@@ -196,7 +208,7 @@ const createDraftCardnews = async (payload: {
   await docRef.set({
     uid: payload.uid,
     status: "draft",
-    slides: payload.slides,
+    slides: sanitizeSlidesForFirestore(payload.slides),
     caption: payload.caption ?? null,
     content: payload.content,
     style: payload.style ?? null,
@@ -303,8 +315,8 @@ const validateAndNormalizeSlides = (params: {
       title,
       body,
       keywords,
-      imageUrl: index === 0 ? params.imageUrl : undefined,
       textPosition,
+      ...(index === 0 && params.imageUrl ? { imageUrl: params.imageUrl } : {}),
     };
 
     slides.push(slide);

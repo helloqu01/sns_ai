@@ -6,8 +6,8 @@ import { PNG } from "pngjs";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const clampText = (value: string | null, maxLength: number, fallback: string) => {
-  const trimmed = (value || "").trim();
+const clampText = (value: unknown, maxLength: number, fallback: string) => {
+  const trimmed = typeof value === "string" ? value.trim() : "";
   if (!trimmed) return fallback;
   return trimmed.slice(0, maxLength);
 };

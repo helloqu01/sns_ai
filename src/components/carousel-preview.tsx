@@ -16,6 +16,24 @@ export interface Slide {
     image?: string;
     renderedImageUrl?: string;
     textPosition?: "top" | "center" | "bottom";
+    textOffsetX?: number;
+    textOffsetY?: number;
+    titleOffsetX?: number;
+    titleOffsetY?: number;
+    bodyOffsetX?: number;
+    bodyOffsetY?: number;
+    titleTextStyle?: {
+        fontFamily?: string;
+        fontSize?: number;
+        color?: string;
+        fontWeight?: number;
+    };
+    bodyTextStyle?: {
+        fontFamily?: string;
+        fontSize?: number;
+        color?: string;
+        fontWeight?: number;
+    };
 }
 
 interface CarouselPreviewProps {
@@ -36,6 +54,73 @@ const toAvatarInitial = (accountName: string) => {
     const stripped = accountName.replace(/[\s._-]+/g, '');
     if (!stripped) return 'IG';
     return stripped.slice(0, 2).toUpperCase();
+};
+
+const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+const asFiniteNumber = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+
+const getSlideTextOffset = (slide: Slide, index: number) => {
+    const fallbackY = slide.textPosition === "top"
+        ? 24
+        : slide.textPosition === "bottom"
+            ? 78
+            : index === 0
+                ? 78
+                : 50;
+
+    return {
+        x: typeof slide.textOffsetX === "number" ? clamp(slide.textOffsetX, 8, 92) : 38,
+        y: typeof slide.textOffsetY === "number" ? clamp(slide.textOffsetY, 10, 90) : fallbackY,
+    };
+};
+
+const resolveLayerOffset = (slide: Slide, index: number, layer: "title" | "body") => {
+    const base = getSlideTextOffset(slide, index);
+    if (layer === "title") {
+        return {
+            x: typeof slide.titleOffsetX === "number" ? clamp(slide.titleOffsetX, 8, 92) : base.x,
+            y: typeof slide.titleOffsetY === "number" ? clamp(slide.titleOffsetY, 10, 90) : base.y,
+        };
+    }
+    return {
+        x: typeof slide.bodyOffsetX === "number" ? clamp(slide.bodyOffsetX, 8, 92) : base.x,
+        y: typeof slide.bodyOffsetY === "number" ? clamp(slide.bodyOffsetY, 10, 90) : clamp(base.y + 16, 10, 90),
+    };
+};
+
+const resolveTextStyle = (
+    slide: Slide,
+    layer: "title" | "body",
+    isCoverSlide: boolean,
+) => {
+    const fallback = layer === "title"
+        ? {
+            fontFamily: "inherit",
+            fontSize: isCoverSlide ? 54 : 40,
+            color: "#ffffff",
+            fontWeight: 800,
+        }
+        : {
+            fontFamily: "inherit",
+            fontSize: isCoverSlide ? 30 : 28,
+            color: "#f8fafc",
+            fontWeight: 600,
+        };
+
+    const source = layer === "title" ? slide.titleTextStyle : slide.bodyTextStyle;
+    const fontSize = asFiniteNumber(source?.fontSize);
+    const fontWeight = asFiniteNumber(source?.fontWeight);
+    const color = typeof source?.color === "string" && source.color.trim().length > 0 ? source.color.trim() : fallback.color;
+    const fontFamily = typeof source?.fontFamily === "string" && source.fontFamily.trim().length > 0
+        ? source.fontFamily.trim()
+        : fallback.fontFamily;
+
+    return {
+        fontFamily,
+        fontSize: fontSize !== null ? clamp(fontSize, 12, 96) : fallback.fontSize,
+        color,
+        fontWeight: fontWeight !== null ? clamp(fontWeight, 100, 900) : fallback.fontWeight,
+    };
 };
 
 export function CarouselPreview({
@@ -114,7 +199,11 @@ export function CarouselPreview({
                     const titleText = (slide.title || `슬라이드 ${index + 1}`).trim();
                     const bodyText = (slide.body || slide.content || '').trim();
                     const isCoverSlide = index === 0;
-                    const slideImageUrl = (slide.renderedImageUrl || slide.image || '').trim();
+                    const slideImageUrl = (slide.image || slide.renderedImageUrl || '').trim();
+                    const titleOffset = resolveLayerOffset(slide, index, "title");
+                    const bodyOffset = resolveLayerOffset(slide, index, "body");
+                    const titleStyle = resolveTextStyle(slide, "title", isCoverSlide);
+                    const bodyStyle = resolveTextStyle(slide, "body", isCoverSlide);
 
                     return (
                     <SwiperSlide key={slide.id || index}>
@@ -124,34 +213,58 @@ export function CarouselPreview({
                                     <img
                                         src={slideImageUrl}
                                         alt=""
-                                        className="absolute inset-0 w-full h-full object-cover opacity-60"
+                                        className="absolute inset-0 w-full h-full object-cover"
                                     />
-                                    <div className="absolute inset-0 bg-gradient-to-br from-black/80 via-black/40 to-black/80" />
                                 </>
                             ) : (
-                                <div className="absolute inset-0 bg-gradient-to-br from-blue-600 to-indigo-800" />
+                                <div className="absolute inset-0 bg-[radial-gradient(circle_at_18%_18%,rgba(244,114,182,0.55),transparent_44%),radial-gradient(circle_at_85%_14%,rgba(96,165,250,0.45),transparent_42%),linear-gradient(150deg,#0f172a_0%,#1e293b_55%,#334155_100%)]" />
                             )}
+                            <div className="absolute inset-0 bg-gradient-to-b from-black/10 via-black/35 to-black/75" />
 
-                            <div className="relative z-10 w-full h-full flex flex-col">
-                                {isCoverSlide ? (
-                                    <div className="mt-auto max-w-[88%] pb-1">
-                                        <h2 className="text-[34px] font-black leading-[1.14] tracking-[-0.02em] text-white drop-shadow-[0_6px_24px_rgba(2,6,23,0.55)]">
-                                            {titleText}
-                                        </h2>
-                                    </div>
-                                ) : (
-                                    <>
-                                        <h2 className="rounded-xl border border-white/25 bg-black/30 px-4 py-3 text-xl font-black leading-tight drop-shadow-md">
-                                            {titleText}
-                                        </h2>
-                                        {bodyText ? (
-                                            <p className="mt-4 text-base opacity-95 whitespace-pre-wrap leading-relaxed drop-shadow-sm">
-                                                {bodyText}
-                                            </p>
-                                        ) : null}
-                                    </>
-                                )}
+                            <div
+                                className="absolute z-10 w-[88%] max-w-[88%]"
+                                style={{
+                                    left: `${titleOffset.x}%`,
+                                    top: `${titleOffset.y}%`,
+                                    transform: "translate(-50%, -50%)",
+                                }}
+                            >
+                                <h2
+                                    className={isCoverSlide
+                                        ? "leading-[1.14] tracking-[-0.02em] drop-shadow-[0_6px_24px_rgba(2,6,23,0.55)]"
+                                        : "rounded-xl border border-white/25 bg-black/30 px-4 py-3 leading-tight drop-shadow-md"}
+                                    style={{
+                                        fontFamily: titleStyle.fontFamily === "inherit" ? undefined : titleStyle.fontFamily,
+                                        fontSize: `${titleStyle.fontSize}px`,
+                                        color: titleStyle.color,
+                                        fontWeight: titleStyle.fontWeight,
+                                    }}
+                                >
+                                    {titleText}
+                                </h2>
                             </div>
+                            {bodyText ? (
+                                <div
+                                    className="absolute z-10 w-[86%] max-w-[86%]"
+                                    style={{
+                                        left: `${bodyOffset.x}%`,
+                                        top: `${bodyOffset.y}%`,
+                                        transform: "translate(-50%, -50%)",
+                                    }}
+                                >
+                                    <p
+                                        className="whitespace-pre-wrap leading-relaxed drop-shadow-sm"
+                                        style={{
+                                            fontFamily: bodyStyle.fontFamily === "inherit" ? undefined : bodyStyle.fontFamily,
+                                            fontSize: `${bodyStyle.fontSize}px`,
+                                            color: bodyStyle.color,
+                                            fontWeight: bodyStyle.fontWeight,
+                                        }}
+                                    >
+                                        {bodyText}
+                                    </p>
+                                </div>
+                            ) : null}
                         </div>
                     </SwiperSlide>
                 )})}

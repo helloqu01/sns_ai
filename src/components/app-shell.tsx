@@ -6,6 +6,7 @@ import { Moon, Sun } from "lucide-react";
 import { Sidebar } from "@/components/sidebar";
 import { useAuth } from "@/components/auth-provider";
 import { auth } from "@/lib/firebase-client";
+import { isDevAuthBypassActive } from "@/lib/dev-auth-bypass";
 import { cn } from "@/lib/utils";
 
 type ThemeMode = "light" | "dark";
@@ -30,11 +31,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return localStorage.getItem("app_theme") === "dark" ? "dark" : "light";
   });
   const [authCheckTimedOut, setAuthCheckTimedOut] = useState(false);
+  const [devAuthBypassEnabled, setDevAuthBypassEnabled] = useState(false);
+  const [authGuardReady, setAuthGuardReady] = useState(false);
 
   const isLoginPage = pathname === "/login";
   const effectiveUser = user ?? auth?.currentUser ?? null;
   const isVerifiedUser = Boolean(effectiveUser && (!requireEmailVerification || effectiveUser.emailVerified));
+  const shouldEnforceAuth = process.env.NODE_ENV === "development"
+    ? false
+    : (authGuardReady ? !devAuthBypassEnabled : true);
   const appBackgroundClass = "app-shell-bg";
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setDevAuthBypassEnabled(isDevAuthBypassActive(window.location.hostname));
+    setAuthGuardReady(true);
+  }, []);
 
   useEffect(() => {
     localStorage.setItem("app_sidebar_collapsed", isSidebarCollapsed ? "1" : "0");
@@ -46,6 +58,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [theme]);
 
   useEffect(() => {
+    if (!authGuardReady) return;
+    if (!shouldEnforceAuth) {
+      setAuthCheckTimedOut(false);
+      return;
+    }
     if (isLoginPage) {
       setAuthCheckTimedOut(false);
       return;
@@ -57,13 +74,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
     const timeoutId = window.setTimeout(() => {
       setAuthCheckTimedOut(true);
-      router.replace("/login?auth=timeout");
     }, 8000);
 
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [isLoginPage, loading, router]);
+  }, [authGuardReady, isLoginPage, loading, shouldEnforceAuth]);
 
   const handleSidebarToggle = useCallback(() => {
     setIsSidebarCollapsed((prev) => !prev);
@@ -74,6 +90,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (!authGuardReady) return;
+    if (!shouldEnforceAuth) return;
     if (loading) return;
     if (!effectiveUser && !isLoginPage) {
       router.replace("/login");
@@ -86,7 +104,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     if (effectiveUser && isVerifiedUser && isLoginPage) {
       router.replace("/");
     }
-  }, [effectiveUser, isLoginPage, isVerifiedUser, loading, router]);
+  }, [authGuardReady, effectiveUser, isLoginPage, isVerifiedUser, loading, router, shouldEnforceAuth]);
 
   if (isLoginPage) {
     return (
@@ -107,11 +125,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     );
   }
 
-  if (loading || !effectiveUser || !isVerifiedUser) {
+  if (shouldEnforceAuth && (loading || !effectiveUser || !isVerifiedUser)) {
     return (
       <div className="app-shell-bg flex min-h-screen items-center justify-center transition-colors duration-300">
         <div className="text-sm font-bold text-slate-400">
-          {authCheckTimedOut ? "로그인 확인이 지연되어 로그인 페이지로 이동 중입니다..." : "로그인 확인 중..."}
+          {authCheckTimedOut ? "로그인 확인이 지연되고 있습니다. 잠시 후 자동으로 계속 진행됩니다..." : "로그인 확인 중..."}
         </div>
       </div>
     );

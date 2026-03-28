@@ -647,6 +647,12 @@ export default function InstagramAiPage() {
   const { user, loading: authLoading } = useAuth();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const selectedCardnewsIdFromQuery = useMemo(() => {
+    const cardnewsId = searchParams.get("cardnewsId")?.trim();
+    if (cardnewsId) return cardnewsId;
+    const legacyDraftId = searchParams.get("draftId")?.trim();
+    return legacyDraftId || null;
+  }, [searchParams]);
   const normalizedPathname = useMemo(() => {
     const trimmed = (pathname || "").replace(/\/+$/, "");
     return trimmed || "/";
@@ -782,6 +788,11 @@ export default function InstagramAiPage() {
     },
     [festivals, fixedFestivalData, selectedFestivalId],
   );
+
+  useEffect(() => {
+    if (!selectedCardnewsIdFromQuery) return;
+    setSelectedSavedCardnewsId((prev) => (prev === selectedCardnewsIdFromQuery ? prev : selectedCardnewsIdFromQuery));
+  }, [selectedCardnewsIdFromQuery]);
 
   useEffect(() => {
     setSuggestedPlanAngles([]);

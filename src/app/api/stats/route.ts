@@ -71,10 +71,11 @@ export async function GET(req: NextRequest) {
     if (!uid) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    const forceRefresh = req.nextUrl.searchParams.get("refresh") === "1";
 
     const now = Date.now();
     const cached = globalForStatsCache.__dashboardStatsCache?.[uid];
-    if (cached && cached.expiresAt > now) {
+    if (!forceRefresh && cached && cached.expiresAt > now) {
       return NextResponse.json(cached.payload);
     }
 

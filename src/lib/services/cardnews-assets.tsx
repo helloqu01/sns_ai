@@ -21,8 +21,8 @@ export type PersistedCardnewsSlide = {
 
 const DOWNLOAD_URL_HOST = "https://firebasestorage.googleapis.com";
 
-const clampText = (value: string | null | undefined, maxLength: number, fallback: string) => {
-  const trimmed = (value || "").trim();
+const clampText = (value: unknown, maxLength: number, fallback: string) => {
+  const trimmed = typeof value === "string" ? value.trim() : "";
   if (!trimmed) return fallback;
   return trimmed.slice(0, maxLength);
 };

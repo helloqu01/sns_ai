@@ -16,6 +16,25 @@ type CardnewsSlide = {
   keywords?: string;
   image?: string | null;
   renderedImageUrl?: string | null;
+  textPosition?: "top" | "center" | "bottom";
+  textOffsetX?: number;
+  textOffsetY?: number;
+  titleOffsetX?: number;
+  titleOffsetY?: number;
+  bodyOffsetX?: number;
+  bodyOffsetY?: number;
+  titleTextStyle?: {
+    fontFamily?: string;
+    fontSize?: number;
+    color?: string;
+    fontWeight?: number;
+  };
+  bodyTextStyle?: {
+    fontFamily?: string;
+    fontSize?: number;
+    color?: string;
+    fontWeight?: number;
+  };
 };
 
 type CardnewsDetail = {
@@ -70,6 +89,34 @@ const asNullableString = (value: unknown) => {
   return value.trim();
 };
 
+const asFiniteNumber = (value: unknown) => {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return value;
+};
+
+const asTextPosition = (value: unknown): CardnewsSlide["textPosition"] => {
+  if (value === "top" || value === "center" || value === "bottom") return value;
+  return undefined;
+};
+
+const asSlideTextStyle = (value: unknown) => {
+  if (!value || typeof value !== "object") return undefined;
+  const source = value as Record<string, unknown>;
+  const fontFamily = asNonEmptyString(source.fontFamily) ?? undefined;
+  const fontSize = asFiniteNumber(source.fontSize) ?? undefined;
+  const color = asNonEmptyString(source.color) ?? undefined;
+  const fontWeight = asFiniteNumber(source.fontWeight) ?? undefined;
+  if (!fontFamily && fontSize === undefined && !color && fontWeight === undefined) {
+    return undefined;
+  }
+  return {
+    fontFamily,
+    fontSize,
+    color,
+    fontWeight,
+  };
+};
+
 const asStatus = (value: unknown): CardnewsStatus => (value === "published" ? "published" : "draft");
 
 const asIsoString = (value: unknown) => {
@@ -87,13 +134,46 @@ const toSlide = (value: unknown): CardnewsSlide | null => {
   const keywords = asNullableString(source.keywords);
   const image = asNullableString(source.image);
   const renderedImageUrl = asNullableString(source.renderedImageUrl);
-  if (title === null && body === null && keywords === null && image === null && renderedImageUrl === null) return null;
+  const textPosition = asTextPosition(source.textPosition);
+  const textOffsetX = asFiniteNumber(source.textOffsetX);
+  const textOffsetY = asFiniteNumber(source.textOffsetY);
+  const titleOffsetX = asFiniteNumber(source.titleOffsetX);
+  const titleOffsetY = asFiniteNumber(source.titleOffsetY);
+  const bodyOffsetX = asFiniteNumber(source.bodyOffsetX);
+  const bodyOffsetY = asFiniteNumber(source.bodyOffsetY);
+  const titleTextStyle = asSlideTextStyle(source.titleTextStyle);
+  const bodyTextStyle = asSlideTextStyle(source.bodyTextStyle);
+  if (
+    title === null
+    && body === null
+    && keywords === null
+    && image === null
+    && renderedImageUrl === null
+    && textPosition === undefined
+    && textOffsetX === null
+    && textOffsetY === null
+    && titleOffsetX === null
+    && titleOffsetY === null
+    && bodyOffsetX === null
+    && bodyOffsetY === null
+    && !titleTextStyle
+    && !bodyTextStyle
+  ) return null;
   return {
     title: title ?? "",
     body: body ?? "",
     keywords: keywords ?? "",
     image,
     renderedImageUrl,
+    textPosition,
+    textOffsetX: textOffsetX ?? undefined,
+    textOffsetY: textOffsetY ?? undefined,
+    titleOffsetX: titleOffsetX ?? undefined,
+    titleOffsetY: titleOffsetY ?? undefined,
+    bodyOffsetX: bodyOffsetX ?? undefined,
+    bodyOffsetY: bodyOffsetY ?? undefined,
+    titleTextStyle,
+    bodyTextStyle,
   };
 };
 
@@ -104,11 +184,34 @@ const toSlides = (value: unknown): CardnewsSlide[] => {
     .filter((slide): slide is CardnewsSlide => Boolean(slide));
 };
 
-const stripRenderedImageUrls = (slides: CardnewsSlide[]) => slides.map(({ title, body, keywords, image }) => ({
+const stripRenderedImageUrls = (slides: CardnewsSlide[]) => slides.map(({
   title,
   body,
   keywords,
   image,
+  textPosition,
+  textOffsetX,
+  textOffsetY,
+  titleOffsetX,
+  titleOffsetY,
+  bodyOffsetX,
+  bodyOffsetY,
+  titleTextStyle,
+  bodyTextStyle,
+}) => ({
+  title,
+  body,
+  keywords,
+  image,
+  textPosition,
+  textOffsetX,
+  textOffsetY,
+  titleOffsetX,
+  titleOffsetY,
+  bodyOffsetX,
+  bodyOffsetY,
+  titleTextStyle,
+  bodyTextStyle,
 }));
 
 const getUidFromRequest = async (req: NextRequest) => {
