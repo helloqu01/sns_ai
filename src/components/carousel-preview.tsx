@@ -161,7 +161,7 @@ export function CarouselPreview({
     };
 
     return (
-        <div className="w-full max-w-[400px] mx-auto bg-white rounded-[2rem] border border-slate-200 shadow-2xl overflow-hidden font-sans">
+        <div className="w-full max-w-[400px] mx-auto break-keep overflow-hidden rounded-[2rem] border border-slate-200 bg-white font-sans shadow-2xl">
             {/* Header */}
             <div className="flex items-center justify-between px-3.5 py-3 border-b border-slate-100/60 bg-white">
                 <div className="flex items-center gap-3">
@@ -173,8 +173,8 @@ export function CarouselPreview({
                         </div>
                     </div>
                     <div className="flex flex-col">
-                        <span className="text-[13px] font-semibold text-slate-900 leading-none mb-0.5 tracking-tight">{displayAccountName}</span>
-                        <span className="text-[11px] text-slate-500 leading-none">{displayAccountLocation}</span>
+                        <span className="mb-0.5 text-[13px] font-semibold leading-none tracking-tight text-slate-900">{displayAccountName}</span>
+                        <span className="break-keep text-[11px] leading-none text-slate-500">{displayAccountLocation}</span>
                     </div>
                 </div>
                 <button className="text-slate-900 hover:opacity-60 transition-opacity">
@@ -231,8 +231,8 @@ export function CarouselPreview({
                             >
                                 <h2
                                     className={isCoverSlide
-                                        ? "leading-[1.14] tracking-[-0.02em] drop-shadow-[0_6px_24px_rgba(2,6,23,0.55)]"
-                                        : "rounded-xl border border-white/25 bg-black/30 px-4 py-3 leading-tight drop-shadow-md"}
+                                        ? "whitespace-pre-wrap break-keep leading-[1.14] tracking-[-0.02em] drop-shadow-[0_6px_24px_rgba(2,6,23,0.55)]"
+                                        : "whitespace-pre-wrap break-keep rounded-xl border border-white/25 bg-black/30 px-4 py-3 leading-tight drop-shadow-md"}
                                     style={{
                                         fontFamily: titleStyle.fontFamily === "inherit" ? undefined : titleStyle.fontFamily,
                                         fontSize: `${titleStyle.fontSize}px`,
@@ -253,7 +253,7 @@ export function CarouselPreview({
                                     }}
                                 >
                                     <p
-                                        className="whitespace-pre-wrap leading-relaxed drop-shadow-sm"
+                                        className="whitespace-pre-wrap break-keep leading-relaxed drop-shadow-sm"
                                         style={{
                                             fontFamily: bodyStyle.fontFamily === "inherit" ? undefined : bodyStyle.fontFamily,
                                             fontSize: `${bodyStyle.fontSize}px`,
@@ -292,8 +292,8 @@ export function CarouselPreview({
                 </div>
 
                 {/* Live Caption Text */}
-                <div className="text-[13px] text-slate-900 leading-[1.4] tracking-tight whitespace-pre-wrap">
-                    <span className="font-semibold mr-1.5 align-top">{displayAccountName}</span>
+                <div className="break-keep whitespace-pre-wrap text-[13px] leading-[1.4] tracking-tight text-slate-900">
+                    <span className="mr-1.5 whitespace-nowrap font-semibold align-top">{displayAccountName}</span>
                     <span className={isExpanded ? "" : "line-clamp-2"}>
                         {renderCaption(caption)}
                     </span>

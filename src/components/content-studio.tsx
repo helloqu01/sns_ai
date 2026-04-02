@@ -2259,7 +2259,7 @@ export default function ContentStudio(props: ContentStudioProps) {
       </div>
 
       {/* Main Workspace Section */}
-      <div className="mb-16 grid grid-cols-1 items-start gap-7 lg:grid-cols-[minmax(360px,440px)_minmax(0,1fr)]">
+      <div className="mb-16 grid grid-cols-1 items-start gap-7 lg:grid-cols-[minmax(340px,420px)_minmax(0,1fr)]">
         <div className="order-1 space-y-6 lg:sticky lg:top-6">
           <div className="glassmorphism overflow-hidden rounded-[2.2rem] border-none shadow-[0_26px_70px_rgba(15,23,42,0.08)]">
             <div className="border-b border-white/70 bg-[linear-gradient(135deg,rgba(255,255,255,0.88),rgba(255,241,246,0.98)_55%,rgba(255,247,237,0.92))] px-6 py-6">
@@ -2288,7 +2288,7 @@ export default function ContentStudio(props: ContentStudioProps) {
                     <div className="text-[10px] font-black uppercase tracking-[0.28em] text-slate-400">Plan Settings</div>
                     <p className="mt-1 text-sm font-black text-slate-900">콘텐츠 방향과 레이아웃 기준</p>
                   </div>
-                  <div className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-black text-slate-500">
+                  <div className="whitespace-nowrap rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-black text-slate-500">
                     텍스트 밀도 자동 반영
                   </div>
                 </div>
@@ -2588,14 +2588,14 @@ export default function ContentStudio(props: ContentStudioProps) {
                 </p>
               </div>
             ) : generatedSlides.length > 0 ? (
-              <div className="grid gap-6 xl:grid-cols-[minmax(320px,390px)_minmax(0,1fr)]">
+              <div className="grid gap-6 2xl:grid-cols-[minmax(320px,390px)_minmax(0,1fr)]">
                 <div className="rounded-[2rem] border border-white/80 bg-white/82 p-5 shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
                   <div className="mb-4 flex items-center justify-between gap-3">
                     <div>
                       <div className="text-[10px] font-black uppercase tracking-[0.28em] text-slate-400">Instagram Mockup</div>
                       <p className="mt-1 text-sm font-black text-slate-900">현재 캡션과 슬라이드를 피드 형태로 확인</p>
                     </div>
-                    <div className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-black text-slate-500">
+                    <div className="whitespace-nowrap rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-black text-slate-500">
                       {ratio}
                     </div>
                   </div>
@@ -2635,7 +2635,7 @@ export default function ContentStudio(props: ContentStudioProps) {
                         <div className="text-[10px] font-black uppercase tracking-[0.28em] text-slate-400">Caption Studio</div>
                         <p className="mt-1 text-sm font-black text-slate-900">생성된 캡션 초안을 바로 다듬기</p>
                       </div>
-                      <div className="rounded-full border border-pink-100 bg-pink-50 px-2.5 py-1 text-[10px] font-black text-pink-600">
+                      <div className="whitespace-nowrap rounded-full border border-pink-100 bg-pink-50 px-2.5 py-1 text-[10px] font-black text-pink-600">
                         {captionText ? 'AI 초안 있음' : '초안 대기'}
                       </div>
                     </div>
@@ -2984,7 +2984,7 @@ export default function ContentStudio(props: ContentStudioProps) {
 
       {isSlideEditorModalOpen && generatedSlides.length > 0 && (
         <div
-          className="fixed inset-0 z-40 flex items-center justify-center p-3 sm:p-5"
+          className="fixed inset-0 z-[70] flex items-center justify-center p-3 sm:p-5"
           role="dialog"
           aria-modal="true"
           aria-labelledby="slide-editor-modal-title"
@@ -3549,7 +3549,7 @@ export default function ContentStudio(props: ContentStudioProps) {
 
       {isCanvaTemplatePickerOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6"
+          className="fixed inset-0 z-[70] flex items-center justify-center p-4 sm:p-6"
           role="dialog"
           aria-modal="true"
           aria-labelledby="canva-template-picker-title"

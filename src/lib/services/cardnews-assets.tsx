@@ -122,7 +122,6 @@ const renderSlideBuffer = async (params: {
             <div
               style={{
                 position: "relative",
-                zIndex: 1,
                 width: "100%",
                 marginTop: "auto",
                 display: "flex",

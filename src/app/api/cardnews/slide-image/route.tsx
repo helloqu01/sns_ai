@@ -112,7 +112,6 @@ export async function GET(req: NextRequest) {
             <div
               style={{
                 position: "relative",
-                zIndex: 1,
                 width: "100%",
                 marginTop: "auto",
                 display: "flex",

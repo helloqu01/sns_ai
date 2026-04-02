@@ -114,7 +114,7 @@ export async function GET(req: NextRequest) {
     if (!config.clientId) {
       return NextResponse.json(
         { error: "Canva OAuth client_id configuration is missing." },
-        { status: 500 },
+        { status: 400 },
       );
     }
     const redirectUri = resolveRedirectUri(requestOrigin, config.redirectUri);

@@ -4,6 +4,7 @@ import {
   cancelInstagramPublishingRecord,
   countInstagramPublishingRecords,
   createInstagramPublishingRecord,
+  executeInstagramPublishingRecord,
   getMetaRequestUid,
   InstagramPublishingRecordNotFoundError,
   listInstagramPublishingRecords,
@@ -288,15 +289,21 @@ export async function POST(req: NextRequest) {
     const tentativePublishAssetId = slides.length > 0 ? `publish-${randomUUID()}` : null;
     tempPublishAssetId = tentativePublishAssetId;
     stage = "slides:materialize";
-    const materialized = slides.length > 0 && tentativePublishAssetId
-      ? await materializeCardnewsSlides({
+    let materialized: Awaited<ReturnType<typeof materializeCardnewsSlides>> | null = null;
+    if (slides.length > 0 && tentativePublishAssetId) {
+      try {
+        materialized = await materializeCardnewsSlides({
           uid,
           cardnewsId: tentativePublishAssetId,
           slides,
           aspectRatio,
           backgroundImageUrl,
-        })
-      : null;
+        });
+      } catch (error) {
+        console.warn("Cardnews slide materialize failed, using render-url fallback:", error);
+        await deleteCardnewsSlideAssets(uid, tentativePublishAssetId).catch(() => undefined);
+      }
+    }
     const publishAssetId = materialized ? tentativePublishAssetId : null;
     if (!publishAssetId) {
       tempPublishAssetId = null;
@@ -374,7 +381,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ post: record }, { status: 201 });
     }
 
-    return NextResponse.json({ post: record }, { status: 201 });
+    stage = "record:execute-now";
+    const executed = await executeInstagramPublishingRecord(uid, record.id);
+    return NextResponse.json({ post: executed }, { status: 201 });
   } catch (error) {
     if (cleanupUid && tempPublishAssetId) {
       await deleteCardnewsSlideAssets(cleanupUid, tempPublishAssetId).catch(() => undefined);

@@ -69,8 +69,8 @@ export function CaptionEditor({
     return (
         <div className={cn(
             embedded
-                ? "rounded-[1.75rem] border border-slate-100/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.94),rgba(252,249,251,0.98))] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)] flex flex-col"
-                : "glassmorphism rounded-[2rem] border-none shadow-xl flex flex-col",
+                ? "rounded-[1.75rem] border border-slate-100/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.94),rgba(252,249,251,0.98))] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)] flex flex-col break-keep"
+                : "glassmorphism rounded-[2rem] border-none shadow-xl flex flex-col break-keep",
             embedded
                 ? ""
                 : compact ? "p-5" : "p-6 h-full",
@@ -79,7 +79,7 @@ export function CaptionEditor({
             <div className="mb-5 flex items-center justify-between gap-4">
                 <div>
                     <h3 className="text-lg font-black tracking-tight text-slate-900">캡션 편집</h3>
-                    <p className="text-[11px] font-bold text-slate-400">
+                    <p className="text-[11px] font-bold leading-relaxed text-slate-400">
                         {showToneAndStyleControls
                             ? '생성된 초안을 다듬거나 설정을 바꿔 생성할 수 있습니다.'
                             : '생성된 초안을 다듬거나 AI 캡션을 생성할 수 있습니다.'}
@@ -89,7 +89,7 @@ export function CaptionEditor({
                     <button
                         onClick={onGenerateCaption}
                         disabled={isGeneratingCaption}
-                        className="inline-flex items-center gap-1 rounded-full border border-pink-100 bg-pink-50 px-3 py-1.5 text-[10px] font-black text-pink-600 disabled:opacity-50"
+                        className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-pink-100 bg-pink-50 px-3 py-1.5 text-[10px] font-black text-pink-600 disabled:opacity-50"
                     >
                         {isGeneratingCaption ? <div className="h-3 w-3 animate-spin rounded-full border-2 border-pink-600/30 border-t-pink-600" /> : <Wand2 className="h-3 w-3" />}
                         {quickGenerateLabel}
@@ -160,20 +160,20 @@ export function CaptionEditor({
                         onChange={(e) => onTextChange(e.target.value)}
                         placeholder="이곳에 인스타그램 캡션이 생성됩니다."
                         className={cn(
-                            "w-full h-full bg-slate-50/50 border-2 border-slate-100 rounded-[1.5rem] p-5 text-sm font-bold leading-relaxed outline-none focus:border-pink-200 transition-all resize-none",
+                            "w-full h-full break-keep bg-slate-50/50 border-2 border-slate-100 rounded-[1.5rem] p-5 text-sm font-bold leading-relaxed outline-none focus:border-pink-200 transition-all resize-none",
                             compact ? "min-h-[190px]" : "min-h-[250px]",
                         )}
                     />
-                    <span className="absolute bottom-4 right-6 text-[10px] font-bold text-slate-300">
+                    <span className="absolute bottom-4 right-6 whitespace-nowrap text-[10px] font-bold text-slate-300">
                         {text.length}/2,200
                     </span>
                 </div>
 
-                <div className="flex gap-3 pt-2">
+                <div className="flex flex-wrap gap-3 pt-2">
                     <button
                         onClick={onGenerateCaption}
                         disabled={isGeneratingCaption}
-                        className="flex-[3] bg-pink-600 hover:bg-pink-700 disabled:bg-pink-300 text-white py-4 rounded-2xl font-black flex items-center justify-center gap-2 transition-all shadow-lg shadow-pink-200 active:scale-95"
+                        className="min-w-0 flex-1 whitespace-nowrap rounded-2xl bg-pink-600 py-4 font-black text-white shadow-lg shadow-pink-200 transition-all hover:bg-pink-700 active:scale-95 flex items-center justify-center gap-2 disabled:bg-pink-300"
                     >
                         {isGeneratingCaption ? (
                             <div className="w-5 h-5 border-3 border-white/30 border-t-white rounded-full animate-spin" />
@@ -184,7 +184,7 @@ export function CaptionEditor({
                     </button>
                     <button
                         onClick={handleCopy}
-                        className="flex-1 bg-white border-2 border-slate-100 hover:border-slate-200 py-4 rounded-2xl font-black flex items-center justify-center gap-2 transition-all active:scale-95"
+                        className="shrink-0 basis-[112px] whitespace-nowrap rounded-2xl border-2 border-slate-100 bg-white py-4 font-black transition-all hover:border-slate-200 active:scale-95 flex items-center justify-center gap-2"
                     >
                         {copied ? <Check className="w-5 h-5 text-emerald-500" /> : <Copy className="w-5 h-5 text-slate-400" />}
                         복사
@@ -195,7 +195,7 @@ export function CaptionEditor({
                     <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 block"># 추천 해시태그</label>
                     <div className="flex flex-wrap gap-2">
                         {['페스티벌가이드', '주간페스티벌', '퀸즈스마일', '페스티벌소식', '놀러가자'].map(tag => (
-                            <span key={tag} className="text-[10px] font-black px-3 py-1.5 rounded-full bg-white border border-slate-100 text-slate-400">#{tag}</span>
+                            <span key={tag} className="whitespace-nowrap text-[10px] font-black px-3 py-1.5 rounded-full bg-white border border-slate-100 text-slate-400">#{tag}</span>
                         ))}
                     </div>
                 </div>

@@ -22,6 +22,8 @@ type DateRange = {
     endDate: string;
 };
 
+const NAVER_MISSING_CREDENTIALS_FLAG = "__NAVER_SEARCH_MISSING_CREDENTIALS_WARNED__";
+
 export class NaverSearchAdapter extends FestivalAdapter {
     sourceName = "WEB_CRAWL" as const;
     private baseUrl = process.env.NAVER_SEARCH_BASE_URL || "https://openapi.naver.com/v1/search";
@@ -32,8 +34,6 @@ export class NaverSearchAdapter extends FestivalAdapter {
     private display = Number.parseInt(process.env.NAVER_SEARCH_DISPLAY || "40", 10);
     private keywords = this.resolveKeywords();
     private searchTypes = this.resolveSearchTypes();
-    private warnedMissingCredentials = false;
-
     constructor() {
         super();
         if (!this.hasCredentials()) {
@@ -78,8 +78,8 @@ export class NaverSearchAdapter extends FestivalAdapter {
     }
 
     private warnMissingCredentials() {
-        if (this.warnedMissingCredentials) return;
-        this.warnedMissingCredentials = true;
+        if (process.env[NAVER_MISSING_CREDENTIALS_FLAG] === "1") return;
+        process.env[NAVER_MISSING_CREDENTIALS_FLAG] = "1";
         console.warn("⚠️ NAVER_SEARCH_CLIENT_ID / NAVER_SEARCH_CLIENT_SECRET is not configured.");
     }
 
