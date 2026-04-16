@@ -3,9 +3,6 @@ import { ImageResponse } from "next/og";
 import jpeg from "jpeg-js";
 import { PNG } from "pngjs";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
 const clampText = (value: unknown, maxLength: number, fallback: string) => {
   const trimmed = typeof value === "string" ? value.trim() : "";
   if (!trimmed) return fallback;
