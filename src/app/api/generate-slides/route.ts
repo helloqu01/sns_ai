@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { geminiFlashModel, geminiProModel } from "@/lib/gemini";
 import { db, isFirebaseConfigured } from "@/lib/firebase-admin";
 import { getFirebaseAdmin } from "@/lib/firebase-admin-helpers";
+import { resolveUidFromRequest } from "@/lib/api-auth";
 import { getUserCardnewsCollection } from "@/lib/firestore-cardnews";
 import { invalidateCardnewsListCache } from "@/lib/services/cardnews-list-cache";
 
@@ -125,15 +126,6 @@ const normalizeForDuplicateCheck = (value: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
-const getUidFromRequest = async (req: NextRequest) => {
-  const authHeader = req.headers.get("authorization") || "";
-  const idToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-  if (!idToken) return null;
-  const admin = getFirebaseAdmin();
-  if (!admin) return null;
-  const decoded = await admin.auth().verifyIdToken(idToken);
-  return decoded.uid;
-};
 
 const getAspectRatioGuide = (aspectRatio?: string) => {
   switch (aspectRatio) {
@@ -690,7 +682,7 @@ const generateSlidesText = async (
 
 export async function POST(req: NextRequest) {
   try {
-    const uid = await getUidFromRequest(req);
+    const uid = await resolveUidFromRequest(req);
     if (!uid) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }

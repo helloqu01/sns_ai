@@ -195,12 +195,12 @@ const getPublicAppOrigin = (() => {
       return cached;
     }
 
+    // OAuth 콜백 URL(META_REDIRECT_URI, CANVA_OAUTH_REDIRECT_URI)은 앱 원본과 다를 수 있으므로 제외.
+    // 명시적인 앱 원본 환경변수만 사용.
     const candidates = [
       process.env.PUBLIC_APP_ORIGIN,
       process.env.NEXT_PUBLIC_APP_URL,
       process.env.APP_URL,
-      process.env.META_REDIRECT_URI,
-      process.env.CANVA_OAUTH_REDIRECT_URI,
     ];
 
     for (const candidate of candidates) {
@@ -228,25 +228,33 @@ const toMetaPublishableImageUrl = (sourceUrl: string) => {
   }
 
   const appOrigin = getPublicAppOrigin();
-  if (!appOrigin) {
-    return sourceUrl;
-  }
-
   try {
     const parsed = new URL(sourceUrl);
-    if (parsed.origin === appOrigin && parsed.pathname === "/api/cardnews/slide-image") {
-      const optimized = new URL(parsed.toString());
+    const appOriginUrl = appOrigin ? new URL(appOrigin) : null;
+    const normalizeToAppOrigin = (url: URL) => {
+      if (!appOriginUrl) {
+        return new URL(url.toString());
+      }
+      return new URL(`${url.pathname}${url.search}`, appOriginUrl);
+    };
+
+    if (parsed.pathname === "/api/cardnews/slide-image") {
+      const optimized = normalizeToAppOrigin(parsed);
       optimized.searchParams.set("mode", "publish");
       return optimized.toString();
     }
 
-    if (parsed.origin === appOrigin && parsed.pathname === "/api/cardnews/image-proxy") {
-      const optimized = new URL(parsed.toString());
+    if (parsed.pathname === "/api/cardnews/image-proxy") {
+      const optimized = normalizeToAppOrigin(parsed);
       optimized.searchParams.set("mode", "publish");
       if (!optimized.searchParams.get("ratio")) {
         optimized.searchParams.set("ratio", "4:5");
       }
       return optimized.toString();
+    }
+
+    if (!appOrigin) {
+      return sourceUrl;
     }
 
     const proxyUrl = new URL("/api/cardnews/image-proxy", appOrigin);

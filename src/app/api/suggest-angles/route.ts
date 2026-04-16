@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { geminiFlashModel } from "@/lib/gemini";
 import { getFirebaseAdmin } from "@/lib/firebase-admin-helpers";
+import { resolveUidFromRequest } from "@/lib/api-auth";
 
 type SuggestedAngle = {
   type: string;
@@ -109,7 +110,7 @@ export async function POST(req: NextRequest) {
   let parsedContent = "";
   let parsedTitle = "이 행사";
   try {
-    const uid = await getUidFromRequest(req);
+    const uid = await resolveUidFromRequest(req);
     if (!uid) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }

@@ -5,9 +5,10 @@ import Link from 'next/link';
 import {
   Search, FileText, Users, MousePointer2, Sparkles, Rocket, CalendarClock,
   Image as ImageIcon, Layout, Save, Calendar, RefreshCw, Info, X, Check, ExternalLink, ChevronLeft, ChevronRight,
-  Type, Minus, Plus, ChevronDown, RotateCcw, RotateCw
+  RotateCcw, RotateCw
 } from 'lucide-react';
 import { CarouselPreview, Slide } from '@/components/carousel-preview';
+import { SlideEditor } from '@/components/slide-editor';
 import { CaptionEditor } from '@/components/caption-editor';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/components/auth-provider';
@@ -335,20 +336,6 @@ const buildAngleHintsContent = (angles: SuggestedAngle[]) => {
   return `[추천 콘텐츠 앵글]\n${lines.join('\n')}`;
 };
 
-const getSlideEditorAspectRatioClass = (aspectRatio: string) => {
-  switch (aspectRatio) {
-    case '1:1':
-      return 'aspect-square';
-    case '16:9':
-      return 'aspect-video';
-    case '9:16':
-      return 'aspect-[9/16]';
-    case '3:4':
-      return 'aspect-[3/4]';
-    default:
-      return 'aspect-[4/5]';
-  }
-};
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
@@ -379,37 +366,6 @@ type SlideTextStyleConfig = {
   fontWeight: number;
 };
 
-const SLIDE_EDITOR_FONT_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: 'inherit', label: 'inherit' },
-  { value: 'Pretendard Variable, sans-serif', label: 'Pretendard' },
-  { value: '"Noto Sans KR", sans-serif', label: 'Noto Sans KR' },
-  { value: '"Nanum Gothic", sans-serif', label: 'Nanum Gothic' },
-  { value: '"Gowun Batang", serif', label: 'Gowun Batang' },
-];
-
-const SLIDE_EDITOR_COLOR_OPTIONS = [
-  '#000000',
-  '#ffffff',
-  '#334155',
-  '#64748b',
-  '#94a3b8',
-  '#ef4444',
-  '#f97316',
-  '#f59e0b',
-  '#eab308',
-  '#84cc16',
-];
-
-const SLIDE_EDITOR_WEIGHT_OPTIONS: Array<{ label: string; value: number }> = [
-  { label: 'L', value: 300 },
-  { label: 'N', value: 400 },
-  { label: 'M', value: 500 },
-  { label: 'SB', value: 600 },
-  { label: 'B', value: 700 },
-];
-
-const SLIDE_EDITOR_SIZE_PRESETS = [12, 16, 20, 24, 32, 40, 48, 64, 80, 96];
-const DEFAULT_TEXT_LAYER = 'title';
 
 const asFiniteNumber = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : null);
 
@@ -549,10 +505,7 @@ export default function ContentStudio(props: ContentStudioProps) {
   const [isSavedContentLoading, setIsSavedContentLoading] = useState(false);
   const [savedContentError, setSavedContentError] = useState<string | null>(null);
   const [activeSlideEditorIndex, setActiveSlideEditorIndex] = useState(0);
-  const [activeTextLayer, setActiveTextLayer] = useState<SlideTextLayerKey>(DEFAULT_TEXT_LAYER);
-  const [openEditorSection, setOpenEditorSection] = useState<'background' | SlideTextLayerKey>('title');
   const [isSlideEditorModalOpen, setIsSlideEditorModalOpen] = useState(false);
-  const [isTextDragActive, setIsTextDragActive] = useState(false);
   const [isDraftDirty, setIsDraftDirty] = useState(false);
   const [isDraftSaving, setIsDraftSaving] = useState(false);
   const [draftSaveError, setDraftSaveError] = useState<string | null>(null);
@@ -575,15 +528,6 @@ export default function ContentStudio(props: ContentStudioProps) {
   const draftAutoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const draftSaveInFlightRef = useRef(false);
   const previousGeneratedSlidesLengthRef = useRef(0);
-  const slidePreviewCanvasRef = useRef<HTMLDivElement | null>(null);
-  const slideTextDragRef = useRef<{
-    pointerId: number;
-    layer: SlideTextLayerKey;
-    startClientX: number;
-    startClientY: number;
-    originX: number;
-    originY: number;
-  } | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const autoCurationIdsKey = useMemo(
     () => autoCurationIds.map((id) => id.trim()).filter(Boolean).join('|'),
@@ -748,109 +692,7 @@ export default function ContentStudio(props: ContentStudioProps) {
     }
   }, [generatedSlides.length]);
 
-  const updateGeneratedSlideField = useCallback((
-    index: number,
-    field: 'title' | 'body' | 'keywords' | 'image',
-    value: string,
-  ) => {
-    setGeneratedSlides((prev) => prev.map((slide, slideIndex) => {
-      if (slideIndex !== index) return slide;
-      if (field === 'title') {
-        return { ...slide, title: value };
-      }
-      if (field === 'body') {
-        return { ...slide, body: value };
-      }
-      if (field === 'keywords') {
-        return { ...slide, keywords: value };
-      }
 
-      const nextImage = value.trim();
-      return {
-        ...slide,
-        image: value,
-        renderedImageUrl: nextImage ? undefined : slide.renderedImageUrl,
-      };
-    }));
-    setIsDraftDirty(true);
-    setDraftSaveError(null);
-  }, []);
-
-  const updateGeneratedSlideTextOffset = useCallback((
-    index: number,
-    textOffsetX: number,
-    textOffsetY: number,
-  ) => {
-    const clampedX = clamp(textOffsetX, 8, 92);
-    const clampedY = clamp(textOffsetY, 10, 90);
-    const textPosition = resolveTextPositionFromOffsetY(clampedY);
-
-    setGeneratedSlides((prev) => prev.map((slide, slideIndex) => {
-      if (slideIndex !== index) return slide;
-      return {
-        ...slide,
-        textOffsetX: clampedX,
-        textOffsetY: clampedY,
-        textPosition,
-        titleOffsetX: clampedX,
-        titleOffsetY: clampedY,
-      };
-    }));
-    setIsDraftDirty(true);
-    setDraftSaveError(null);
-  }, []);
-
-  const updateGeneratedSlideLayerOffset = useCallback((
-    index: number,
-    layer: SlideTextLayerKey,
-    nextX: number,
-    nextY: number,
-  ) => {
-    if (layer === 'title') {
-      updateGeneratedSlideTextOffset(index, nextX, nextY);
-      return;
-    }
-
-    const clampedX = clamp(nextX, 8, 92);
-    const clampedY = clamp(nextY, 10, 90);
-    setGeneratedSlides((prev) => prev.map((slide, slideIndex) => {
-      if (slideIndex !== index) return slide;
-      return {
-        ...slide,
-        bodyOffsetX: clampedX,
-        bodyOffsetY: clampedY,
-      };
-    }));
-    setIsDraftDirty(true);
-    setDraftSaveError(null);
-  }, [updateGeneratedSlideTextOffset]);
-
-  const updateGeneratedSlideLayerStyle = useCallback((
-    index: number,
-    layer: SlideTextLayerKey,
-    patch: Partial<SlideTextStyleConfig>,
-  ) => {
-    setGeneratedSlides((prev) => prev.map((slide, slideIndex) => {
-      if (slideIndex !== index) return slide;
-      const baseStyle = resolveSlideLayerStyle(slide, slideIndex, layer);
-      const merged = normalizeSlideTextStyleInput(
-        { ...baseStyle, ...patch },
-        getDefaultLayerStyle(layer, slideIndex === 0),
-      );
-      if (layer === 'title') {
-        return {
-          ...slide,
-          titleTextStyle: merged,
-        };
-      }
-      return {
-        ...slide,
-        bodyTextStyle: merged,
-      };
-    }));
-    setIsDraftDirty(true);
-    setDraftSaveError(null);
-  }, []);
 
   const saveDraftEdits = useCallback(async () => {
     if (!user || !draftId) return false;
@@ -1205,9 +1047,6 @@ export default function ContentStudio(props: ContentStudioProps) {
     });
   }, [generatedSlides.length]);
 
-  useEffect(() => {
-    setActiveTextLayer(DEFAULT_TEXT_LAYER);
-  }, [activeSlideEditorIndex]);
 
   useEffect(() => {
     const prevLength = previousGeneratedSlidesLengthRef.current;
@@ -1239,13 +1078,6 @@ export default function ContentStudio(props: ContentStudioProps) {
     };
   }, [isSlideEditorModalOpen]);
 
-  useEffect(() => {
-    if (isSlideEditorModalOpen) return;
-    slideTextDragRef.current = null;
-    setIsTextDragActive(false);
-    setActiveTextLayer(DEFAULT_TEXT_LAYER);
-    setOpenEditorSection('title');
-  }, [isSlideEditorModalOpen]);
 
   useEffect(() => () => {
     if (draftAutoSaveTimerRef.current) {
@@ -1951,24 +1783,6 @@ export default function ContentStudio(props: ContentStudioProps) {
     }
   };
 
-  const activeSlide = generatedSlides[activeSlideEditorIndex] ?? null;
-  const activeSlideTitle = (activeSlide?.title || `슬라이드 ${activeSlideEditorIndex + 1}`).trim();
-  const activeSlideBody = (activeSlide?.body || activeSlide?.content || '').trim();
-  const activeSlideImage = (activeSlide?.image || activeSlide?.renderedImageUrl || '').trim();
-  const activeSlideTitleOffset = activeSlide
-    ? resolveSlideLayerOffset(activeSlide, activeSlideEditorIndex, 'title')
-    : { x: 38, y: 50 };
-  const activeSlideBodyOffset = activeSlide
-    ? resolveSlideLayerOffset(activeSlide, activeSlideEditorIndex, 'body')
-    : { x: 38, y: 64 };
-  const activeSlideTitleStyle = activeSlide
-    ? resolveSlideLayerStyle(activeSlide, activeSlideEditorIndex, 'title')
-    : getDefaultLayerStyle('title', activeSlideEditorIndex === 0);
-  const activeSlideBodyStyle = activeSlide
-    ? resolveSlideLayerStyle(activeSlide, activeSlideEditorIndex, 'body')
-    : getDefaultLayerStyle('body', activeSlideEditorIndex === 0);
-  const activeLayerOffset = activeTextLayer === 'title' ? activeSlideTitleOffset : activeSlideBodyOffset;
-  const activeLayerStyle = activeTextLayer === 'title' ? activeSlideTitleStyle : activeSlideBodyStyle;
   const canMoveSlideBackward = activeSlideEditorIndex > 0;
   const canMoveSlideForward = activeSlideEditorIndex < generatedSlides.length - 1;
   const draftSavedTimeText = draftSavedAt
@@ -1990,103 +1804,6 @@ export default function ContentStudio(props: ContentStudioProps) {
     });
   }, [generatedSlides.length]);
 
-  const handleSlideTextDragStart = useCallback((layer: SlideTextLayerKey, event: React.PointerEvent<HTMLDivElement>) => {
-    if (!activeSlide) return;
-    const canvas = slidePreviewCanvasRef.current;
-    if (!canvas) return;
-
-    const { x, y } = resolveSlideLayerOffset(activeSlide, activeSlideEditorIndex, layer);
-    slideTextDragRef.current = {
-      pointerId: event.pointerId,
-      layer,
-      startClientX: event.clientX,
-      startClientY: event.clientY,
-      originX: x,
-      originY: y,
-    };
-    setActiveTextLayer(layer);
-    setIsTextDragActive(true);
-    event.currentTarget.setPointerCapture(event.pointerId);
-    event.preventDefault();
-  }, [activeSlide, activeSlideEditorIndex]);
-
-  const handleSlideTextDragMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    const drag = slideTextDragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    const canvas = slidePreviewCanvasRef.current;
-    if (!canvas) return;
-
-    const rect = canvas.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
-
-    const deltaX = ((event.clientX - drag.startClientX) / rect.width) * 100;
-    const deltaY = ((event.clientY - drag.startClientY) / rect.height) * 100;
-    updateGeneratedSlideLayerOffset(
-      activeSlideEditorIndex,
-      drag.layer,
-      drag.originX + deltaX,
-      drag.originY + deltaY,
-    );
-    event.preventDefault();
-  }, [activeSlideEditorIndex, updateGeneratedSlideLayerOffset]);
-
-  const finishSlideTextDrag = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    if (!slideTextDragRef.current || slideTextDragRef.current.pointerId !== event.pointerId) {
-      return;
-    }
-    slideTextDragRef.current = null;
-    setIsTextDragActive(false);
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-  }, []);
-
-  const adjustSlideLayerFontSize = useCallback((layer: SlideTextLayerKey, delta: number) => {
-    if (!activeSlide) return;
-    const currentStyle = resolveSlideLayerStyle(activeSlide, activeSlideEditorIndex, layer);
-    updateGeneratedSlideLayerStyle(activeSlideEditorIndex, layer, {
-      fontSize: clamp(currentStyle.fontSize + delta, 12, 96),
-    });
-    setActiveTextLayer(layer);
-  }, [activeSlide, activeSlideEditorIndex, updateGeneratedSlideLayerStyle]);
-
-  const setSlideLayerFontSize = useCallback((layer: SlideTextLayerKey, nextSize: number) => {
-    updateGeneratedSlideLayerStyle(activeSlideEditorIndex, layer, {
-      fontSize: clamp(nextSize, 12, 96),
-    });
-    setActiveTextLayer(layer);
-  }, [activeSlideEditorIndex, updateGeneratedSlideLayerStyle]);
-
-  const setSlideLayerColor = useCallback((layer: SlideTextLayerKey, color: string) => {
-    updateGeneratedSlideLayerStyle(activeSlideEditorIndex, layer, { color });
-    setActiveTextLayer(layer);
-  }, [activeSlideEditorIndex, updateGeneratedSlideLayerStyle]);
-
-  const setSlideLayerWeight = useCallback((layer: SlideTextLayerKey, weight: number) => {
-    updateGeneratedSlideLayerStyle(activeSlideEditorIndex, layer, { fontWeight: weight });
-    setActiveTextLayer(layer);
-  }, [activeSlideEditorIndex, updateGeneratedSlideLayerStyle]);
-
-  const setSlideLayerFontFamily = useCallback((layer: SlideTextLayerKey, fontFamily: string) => {
-    updateGeneratedSlideLayerStyle(activeSlideEditorIndex, layer, { fontFamily });
-    setActiveTextLayer(layer);
-  }, [activeSlideEditorIndex, updateGeneratedSlideLayerStyle]);
-
-  const resetSlideLayerOffset = useCallback((layer: SlideTextLayerKey) => {
-    if (!activeSlide) return;
-    if (layer === 'title') {
-      updateGeneratedSlideLayerOffset(
-        activeSlideEditorIndex,
-        'title',
-        38,
-        getDefaultTextOffsetY(activeSlide, activeSlideEditorIndex),
-      );
-    } else {
-      const titleOffset = resolveSlideLayerOffset(activeSlide, activeSlideEditorIndex, 'title');
-      updateGeneratedSlideLayerOffset(activeSlideEditorIndex, 'body', titleOffset.x, clamp(titleOffset.y + 16, 10, 90));
-    }
-    setActiveTextLayer(layer);
-  }, [activeSlide, activeSlideEditorIndex, updateGeneratedSlideLayerOffset]);
 
   const buildExternalPublishPayload = useCallback((): ContentStudioPublishPayload => {
     const normalizedSlides = normalizeSlidesForPersistence(generatedSlides).map((slide) => ({
@@ -3077,471 +2794,30 @@ export default function ContentStudio(props: ContentStudioProps) {
               편집 중에는 페이지를 벗어나지 마세요. 변경사항이 사라질 수 있습니다.
             </div>
 
-            <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 p-4 xl:grid-cols-[minmax(0,1fr)_430px]">
-              <div className="min-h-0 rounded-3xl border border-slate-200 bg-white p-3 shadow-[0_14px_40px_rgba(15,23,42,0.08)] sm:p-4">
-                <div className="h-full overflow-y-auto">
-                  <div className="rounded-[1.35rem] border border-slate-200 bg-slate-900 p-2.5 sm:p-3.5">
-                    {activeSlide ? (
-                      <div
-                        ref={slidePreviewCanvasRef}
-                        className={cn(
-                          'relative mx-auto w-full overflow-hidden rounded-[1rem] border border-white/15 shadow-[0_28px_75px_rgba(2,6,23,0.55)]',
-                          getSlideEditorAspectRatioClass(ratio),
-                          ratio === '16:9' ? 'max-w-[760px]' : 'max-w-[560px]',
-                        )}
-                      >
-                        {activeSlideImage ? (
-                          <img
-                            src={activeSlideImage}
-                            alt=""
-                            className="absolute inset-0 h-full w-full object-cover"
-                          />
-                        ) : (
-                          <div className="absolute inset-0 bg-[radial-gradient(circle_at_18%_18%,rgba(244,114,182,0.55),transparent_44%),radial-gradient(circle_at_85%_14%,rgba(96,165,250,0.45),transparent_42%),linear-gradient(150deg,#0f172a_0%,#1e293b_55%,#334155_100%)]" />
-                        )}
-                        <div className="absolute inset-0 bg-gradient-to-b from-black/10 via-black/35 to-black/70" />
+            <div className="flex-1 overflow-auto p-4 flex flex-col gap-3">
+              <SlideEditor
+                slides={generatedSlides}
+                onSlidesChange={(next) => {
+                  setGeneratedSlides(next);
+                  setIsDraftDirty(true);
+                  setDraftSaveError(null);
+                }}
+                aspectRatio={ratio}
+                selectedIndex={activeSlideEditorIndex}
+                onSelectIndex={setActiveSlideEditorIndex}
+              />
 
-                        <div className="absolute left-3 top-3 z-30 rounded-full border border-white/45 bg-black/40 px-2.5 py-1 text-[10px] font-black text-white/90">
-                          텍스트를 드래그해서 위치 이동
-                        </div>
-
-                        <div
-                          role="button"
-                          tabIndex={0}
-                          onPointerDown={(event) => handleSlideTextDragStart('title', event)}
-                          onPointerMove={handleSlideTextDragMove}
-                          onPointerUp={finishSlideTextDrag}
-                          onPointerCancel={finishSlideTextDrag}
-                          onClick={() => {
-                            setActiveTextLayer('title');
-                            setOpenEditorSection('title');
-                          }}
-                          className={cn(
-                            'absolute z-20 w-[min(88%,560px)] cursor-grab select-none rounded-2xl border px-4 py-3 text-white transition-all',
-                            activeTextLayer === 'title'
-                              ? 'border-[#8b5cf6] bg-black/38 shadow-[0_14px_42px_rgba(139,92,246,0.35)]'
-                              : 'border-white/25 bg-black/35 shadow-[0_10px_30px_rgba(2,6,23,0.42)]',
-                            isTextDragActive && activeTextLayer === 'title' && 'cursor-grabbing',
-                          )}
-                          style={{
-                            left: `${activeSlideTitleOffset.x}%`,
-                            top: `${activeSlideTitleOffset.y}%`,
-                            transform: 'translate(-50%, -50%)',
-                          }}
-                        >
-                          <p className="text-[10px] font-black uppercase tracking-[0.22em] text-white/70">TITLE</p>
-                          <h3
-                            className="mt-2 whitespace-pre-wrap leading-tight"
-                            style={{
-                              fontFamily: activeSlideTitleStyle.fontFamily === 'inherit' ? undefined : activeSlideTitleStyle.fontFamily,
-                              fontSize: `${activeSlideTitleStyle.fontSize}px`,
-                              color: activeSlideTitleStyle.color,
-                              fontWeight: activeSlideTitleStyle.fontWeight,
-                            }}
-                          >
-                            {activeSlideTitle || `슬라이드 ${activeSlideEditorIndex + 1}`}
-                          </h3>
-                        </div>
-
-                        {activeSlideBody ? (
-                          <div
-                            role="button"
-                            tabIndex={0}
-                            onPointerDown={(event) => handleSlideTextDragStart('body', event)}
-                            onPointerMove={handleSlideTextDragMove}
-                            onPointerUp={finishSlideTextDrag}
-                            onPointerCancel={finishSlideTextDrag}
-                            onClick={() => {
-                              setActiveTextLayer('body');
-                              setOpenEditorSection('body');
-                            }}
-                            className={cn(
-                              'absolute z-20 w-[min(86%,540px)] cursor-grab select-none rounded-2xl border px-4 py-3 text-white transition-all',
-                              activeTextLayer === 'body'
-                                ? 'border-[#8b5cf6] bg-black/38 shadow-[0_14px_42px_rgba(139,92,246,0.35)]'
-                                : 'border-white/20 bg-black/32 shadow-[0_10px_28px_rgba(2,6,23,0.36)]',
-                              isTextDragActive && activeTextLayer === 'body' && 'cursor-grabbing',
-                            )}
-                            style={{
-                              left: `${activeSlideBodyOffset.x}%`,
-                              top: `${activeSlideBodyOffset.y}%`,
-                              transform: 'translate(-50%, -50%)',
-                            }}
-                          >
-                            <p className="text-[10px] font-black uppercase tracking-[0.22em] text-white/70">BODY</p>
-                            <p
-                              className="mt-2 whitespace-pre-wrap leading-relaxed"
-                              style={{
-                                fontFamily: activeSlideBodyStyle.fontFamily === 'inherit' ? undefined : activeSlideBodyStyle.fontFamily,
-                                fontSize: `${activeSlideBodyStyle.fontSize}px`,
-                                color: activeSlideBodyStyle.color,
-                                fontWeight: activeSlideBodyStyle.fontWeight,
-                              }}
-                            >
-                              {activeSlideBody}
-                            </p>
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : (
-                      <div className="flex min-h-[420px] items-center justify-center rounded-xl border border-dashed border-white/35 text-sm font-black text-white/75">
-                        편집할 슬라이드를 선택하세요.
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="mt-3 grid grid-cols-4 gap-2 sm:grid-cols-6 xl:grid-cols-7">
-                    {generatedSlides.map((slide, index) => {
-                      const isActive = index === activeSlideEditorIndex;
-                      const thumbTitle = (slide.title || `슬라이드 ${index + 1}`).trim();
-                      const thumbImage = (slide.image || slide.renderedImageUrl || '').trim();
-                      return (
-                        <button
-                          key={slide.id || `${index}-${thumbTitle}`}
-                          type="button"
-                          onClick={() => setActiveSlideEditorIndex(index)}
-                          className={cn(
-                            'group relative overflow-hidden rounded-xl border text-left transition-all',
-                            isActive ? 'border-[#8b5cf6] ring-2 ring-[#c4b5fd]' : 'border-slate-200 hover:border-slate-300',
-                          )}
-                        >
-                          <div className="relative aspect-[3/4] bg-slate-100">
-                            {thumbImage ? (
-                              <img src={thumbImage} alt="" className="absolute inset-0 h-full w-full object-cover" />
-                            ) : (
-                              <div className="absolute inset-0 bg-[linear-gradient(145deg,#f8fafc_0%,#e2e8f0_100%)]" />
-                            )}
-                            <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/10 to-transparent" />
-                            <div className="absolute left-2 top-2 rounded-full border border-white/60 bg-black/40 px-1.5 py-0.5 text-[9px] font-black text-white">
-                              {index + 1}
-                            </div>
-                            <div className="absolute inset-x-2 bottom-2 line-clamp-2 text-[10px] font-black leading-tight text-white drop-shadow">
-                              {thumbTitle || `슬라이드 ${index + 1}`}
-                            </div>
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
+              {/* 저장 상태 / 에러 */}
+              <div className="text-[10px] font-bold text-slate-400 px-1">
+                {draftSavedTimeText ? `마지막 저장 ${draftSavedTimeText}` : '아직 저장 이력이 없습니다.'}
+                {' · '}
+                {draftId ? `Draft ID: ${draftId}` : '초안 없음 (자동저장 비활성)'}
               </div>
-
-              <div className="min-h-0 rounded-3xl border border-slate-200 bg-white p-3 shadow-[0_14px_40px_rgba(15,23,42,0.08)] sm:p-4">
-                <div className="h-full overflow-y-auto pr-0.5">
-                  <div className="grid grid-cols-2 overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
-                    <button type="button" className="border-b-2 border-slate-900 bg-white px-3 py-2.5 text-sm font-black text-slate-900">
-                      편집
-                    </button>
-                    <button type="button" disabled className="px-3 py-2.5 text-sm font-black text-slate-400">
-                      AI 디자이너
-                    </button>
-                  </div>
-
-                  {activeSlide ? (
-                    <div className="mt-3 space-y-3">
-                      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-                        <button
-                          type="button"
-                          onClick={() => setOpenEditorSection((prev) => (prev === 'background' ? 'title' : 'background'))}
-                          className="flex w-full items-center justify-between gap-3 px-3 py-3"
-                        >
-                          <div className="flex items-center gap-2">
-                            <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-blue-100 text-blue-600">
-                              <ImageIcon className="h-4 w-4" />
-                            </span>
-                            <span className="text-sm font-black text-slate-800">Cover Background Image</span>
-                          </div>
-                          <ChevronDown className={cn('h-4 w-4 text-slate-500 transition-transform', openEditorSection === 'background' && 'rotate-180')} />
-                        </button>
-                        {openEditorSection === 'background' && (
-                          <div className="space-y-2 border-t border-slate-100 px-3 pb-3 pt-2">
-                            <div className="flex gap-2">
-                              <input
-                                value={typeof activeSlide.image === 'string' ? activeSlide.image : ''}
-                                onChange={(event) => updateGeneratedSlideField(activeSlideEditorIndex, 'image', event.target.value)}
-                                placeholder="https://..."
-                                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700 outline-none transition-all focus:border-[#8b5cf6]"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => updateGeneratedSlideField(activeSlideEditorIndex, 'image', '')}
-                                disabled={!activeSlideImage}
-                                className="shrink-0 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-600 transition-all hover:bg-slate-50 disabled:opacity-40"
-                              >
-                                삭제
-                              </button>
-                            </div>
-                            <input
-                              value={activeSlide.keywords || ''}
-                              onChange={(event) => updateGeneratedSlideField(activeSlideEditorIndex, 'keywords', event.target.value)}
-                              placeholder="검색 키워드"
-                              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700 outline-none transition-all focus:border-[#8b5cf6]"
-                            />
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="overflow-hidden rounded-xl border border-[#c4b5fd] bg-[#faf8ff]">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setOpenEditorSection((prev) => (prev === 'title' ? 'body' : 'title'));
-                            setActiveTextLayer('title');
-                          }}
-                          className="flex w-full items-center justify-between gap-3 px-3 py-3"
-                        >
-                          <div className="flex items-center gap-2">
-                            <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-100 text-emerald-600">
-                              <Type className="h-4 w-4" />
-                            </span>
-                            <span className="text-sm font-black text-slate-800">{activeSlideTitle || '슬라이드 제목'}</span>
-                          </div>
-                          <ChevronDown className={cn('h-4 w-4 text-slate-500 transition-transform', openEditorSection === 'title' && 'rotate-180')} />
-                        </button>
-                        {openEditorSection === 'title' && (
-                          <div className="space-y-3 border-t border-[#ddd6fe] px-3 pb-3 pt-2">
-                            <textarea
-                              value={activeSlide.title || ''}
-                              onChange={(event) => updateGeneratedSlideField(activeSlideEditorIndex, 'title', event.target.value)}
-                              rows={3}
-                              className="w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-2 text-base font-black text-slate-700 outline-none transition-all focus:border-[#8b5cf6]"
-                            />
-                            <div className="grid grid-cols-2 gap-2">
-                              <div>
-                                <p className="text-[11px] font-black text-slate-500">폰트</p>
-                                <select
-                                  value={activeSlideTitleStyle.fontFamily}
-                                  onChange={(event) => setSlideLayerFontFamily('title', event.target.value)}
-                                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700 outline-none focus:border-[#8b5cf6]"
-                                >
-                                  {SLIDE_EDITOR_FONT_OPTIONS.map((fontOption) => (
-                                    <option key={fontOption.value} value={fontOption.value}>
-                                      {fontOption.label}
-                                    </option>
-                                  ))}
-                                </select>
-                              </div>
-                              <div>
-                                <p className="text-[11px] font-black text-slate-500">크기</p>
-                                <div className="mt-1 flex items-center gap-2">
-                                  <button type="button" onClick={() => adjustSlideLayerFontSize('title', -2)} className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700"><Minus className="h-4 w-4" /></button>
-                                  <div className="flex-1 rounded-xl border border-slate-200 bg-white py-2 text-center text-sm font-black text-slate-700">
-                                    {Math.round(activeSlideTitleStyle.fontSize)}
-                                  </div>
-                                  <button type="button" onClick={() => adjustSlideLayerFontSize('title', 2)} className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700"><Plus className="h-4 w-4" /></button>
-                                </div>
-                              </div>
-                            </div>
-
-                            <div className="flex flex-wrap gap-1.5">
-                              {SLIDE_EDITOR_SIZE_PRESETS.map((sizePreset) => (
-                                <button
-                                  key={`title-size-${sizePreset}`}
-                                  type="button"
-                                  onClick={() => setSlideLayerFontSize('title', sizePreset)}
-                                  className={cn(
-                                    'rounded-md border px-2 py-1 text-xs font-black transition-all',
-                                    Math.round(activeSlideTitleStyle.fontSize) === sizePreset
-                                      ? 'border-[#8b5cf6] bg-[#ede9fe] text-[#6d28d9]'
-                                      : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300',
-                                  )}
-                                >
-                                  {sizePreset}
-                                </button>
-                              ))}
-                            </div>
-
-                            <div>
-                              <p className="text-[11px] font-black text-slate-500">색상</p>
-                              <div className="mt-1 flex flex-wrap gap-2">
-                                {SLIDE_EDITOR_COLOR_OPTIONS.map((color) => (
-                                  <button
-                                    key={`title-color-${color}`}
-                                    type="button"
-                                    onClick={() => setSlideLayerColor('title', color)}
-                                    className={cn(
-                                      'h-7 w-7 rounded-full border-2 transition-all',
-                                      activeSlideTitleStyle.color.toLowerCase() === color.toLowerCase()
-                                        ? 'border-[#8b5cf6] scale-110'
-                                        : 'border-white',
-                                    )}
-                                    style={{ backgroundColor: color }}
-                                  />
-                                ))}
-                              </div>
-                            </div>
-
-                            <div className="grid grid-cols-5 gap-1.5">
-                              {SLIDE_EDITOR_WEIGHT_OPTIONS.map((weightOption) => (
-                                <button
-                                  key={`title-weight-${weightOption.value}`}
-                                  type="button"
-                                  onClick={() => setSlideLayerWeight('title', weightOption.value)}
-                                  className={cn(
-                                    'rounded-lg border py-1.5 text-xs font-black transition-all',
-                                    activeSlideTitleStyle.fontWeight === weightOption.value
-                                      ? 'border-[#8b5cf6] bg-[#8b5cf6] text-white'
-                                      : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300',
-                                  )}
-                                >
-                                  {weightOption.label}
-                                </button>
-                              ))}
-                            </div>
-
-                            <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2">
-                              <p className="text-xs font-black text-slate-600">X {Math.round(activeSlideTitleOffset.x)} · Y {Math.round(activeSlideTitleOffset.y)}</p>
-                              <button type="button" onClick={() => resetSlideLayerOffset('title')} className="text-xs font-black text-[#6d28d9]">
-                                기본 위치
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setOpenEditorSection((prev) => (prev === 'body' ? 'title' : 'body'));
-                            setActiveTextLayer('body');
-                          }}
-                          className="flex w-full items-center justify-between gap-3 px-3 py-3"
-                        >
-                          <div className="flex items-center gap-2">
-                            <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-100 text-emerald-600">
-                              <Type className="h-4 w-4" />
-                            </span>
-                            <span className="text-sm font-black text-slate-800">{activeSlideBody || '본문 문구'}</span>
-                          </div>
-                          <ChevronDown className={cn('h-4 w-4 text-slate-500 transition-transform', openEditorSection === 'body' && 'rotate-180')} />
-                        </button>
-                        {openEditorSection === 'body' && (
-                          <div className="space-y-3 border-t border-slate-100 px-3 pb-3 pt-2">
-                            <textarea
-                              value={activeSlide.body || activeSlide.content || ''}
-                              onChange={(event) => updateGeneratedSlideField(activeSlideEditorIndex, 'body', event.target.value)}
-                              rows={4}
-                              className="w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700 outline-none transition-all focus:border-[#8b5cf6]"
-                            />
-                            <div className="grid grid-cols-2 gap-2">
-                              <div>
-                                <p className="text-[11px] font-black text-slate-500">폰트</p>
-                                <select
-                                  value={activeSlideBodyStyle.fontFamily}
-                                  onChange={(event) => setSlideLayerFontFamily('body', event.target.value)}
-                                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700 outline-none focus:border-[#8b5cf6]"
-                                >
-                                  {SLIDE_EDITOR_FONT_OPTIONS.map((fontOption) => (
-                                    <option key={`body-font-${fontOption.value}`} value={fontOption.value}>
-                                      {fontOption.label}
-                                    </option>
-                                  ))}
-                                </select>
-                              </div>
-                              <div>
-                                <p className="text-[11px] font-black text-slate-500">크기</p>
-                                <div className="mt-1 flex items-center gap-2">
-                                  <button type="button" onClick={() => adjustSlideLayerFontSize('body', -2)} className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700"><Minus className="h-4 w-4" /></button>
-                                  <div className="flex-1 rounded-xl border border-slate-200 bg-white py-2 text-center text-sm font-black text-slate-700">
-                                    {Math.round(activeSlideBodyStyle.fontSize)}
-                                  </div>
-                                  <button type="button" onClick={() => adjustSlideLayerFontSize('body', 2)} className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700"><Plus className="h-4 w-4" /></button>
-                                </div>
-                              </div>
-                            </div>
-
-                            <div className="flex flex-wrap gap-1.5">
-                              {SLIDE_EDITOR_SIZE_PRESETS.map((sizePreset) => (
-                                <button
-                                  key={`body-size-${sizePreset}`}
-                                  type="button"
-                                  onClick={() => setSlideLayerFontSize('body', sizePreset)}
-                                  className={cn(
-                                    'rounded-md border px-2 py-1 text-xs font-black transition-all',
-                                    Math.round(activeSlideBodyStyle.fontSize) === sizePreset
-                                      ? 'border-[#8b5cf6] bg-[#ede9fe] text-[#6d28d9]'
-                                      : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300',
-                                  )}
-                                >
-                                  {sizePreset}
-                                </button>
-                              ))}
-                            </div>
-
-                            <div>
-                              <p className="text-[11px] font-black text-slate-500">색상</p>
-                              <div className="mt-1 flex flex-wrap gap-2">
-                                {SLIDE_EDITOR_COLOR_OPTIONS.map((color) => (
-                                  <button
-                                    key={`body-color-${color}`}
-                                    type="button"
-                                    onClick={() => setSlideLayerColor('body', color)}
-                                    className={cn(
-                                      'h-7 w-7 rounded-full border-2 transition-all',
-                                      activeSlideBodyStyle.color.toLowerCase() === color.toLowerCase()
-                                        ? 'border-[#8b5cf6] scale-110'
-                                        : 'border-white',
-                                    )}
-                                    style={{ backgroundColor: color }}
-                                  />
-                                ))}
-                              </div>
-                            </div>
-
-                            <div className="grid grid-cols-5 gap-1.5">
-                              {SLIDE_EDITOR_WEIGHT_OPTIONS.map((weightOption) => (
-                                <button
-                                  key={`body-weight-${weightOption.value}`}
-                                  type="button"
-                                  onClick={() => setSlideLayerWeight('body', weightOption.value)}
-                                  className={cn(
-                                    'rounded-lg border py-1.5 text-xs font-black transition-all',
-                                    activeSlideBodyStyle.fontWeight === weightOption.value
-                                      ? 'border-[#8b5cf6] bg-[#8b5cf6] text-white'
-                                      : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300',
-                                  )}
-                                >
-                                  {weightOption.label}
-                                </button>
-                              ))}
-                            </div>
-
-                            <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2">
-                              <p className="text-xs font-black text-slate-600">X {Math.round(activeSlideBodyOffset.x)} · Y {Math.round(activeSlideBodyOffset.y)}</p>
-                              <button type="button" onClick={() => resetSlideLayerOffset('body')} className="text-xs font-black text-[#6d28d9]">
-                                기본 위치
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="mt-3 rounded-xl border border-dashed border-slate-300 bg-white px-4 py-6 text-center text-xs font-black text-slate-500">
-                      편집할 슬라이드를 선택하세요.
-                    </div>
-                  )}
-
-                  <div className="mt-3 text-[10px] font-bold text-slate-400">
-                    {draftSavedTimeText ? `마지막 저장 ${draftSavedTimeText}` : '아직 저장 이력이 없습니다.'}
-                    <br />
-                    {draftId ? `Draft ID: ${draftId}` : '초안이 없어 자동 저장이 비활성화됩니다.'}
-                    <br />
-                    {activeTextLayer === 'title' ? '현재 선택: 제목 텍스트' : '현재 선택: 본문 텍스트'}
-                    {' · '}
-                    {`폰트 ${Math.round(activeLayerStyle.fontSize)}px`}
-                    {' · '}
-                    {`위치 ${Math.round(activeLayerOffset.x)}, ${Math.round(activeLayerOffset.y)}`}
-                  </div>
-
-                  {draftSaveError && (
-                    <div className="mt-3 rounded-xl border border-rose-100 bg-rose-50 px-3 py-2 text-[11px] font-bold text-rose-600">
-                      {draftSaveError}
-                    </div>
-                  )}
+              {draftSaveError && (
+                <div className="rounded-xl border border-rose-100 bg-rose-50 px-3 py-2 text-[11px] font-bold text-rose-600">
+                  {draftSaveError}
                 </div>
-              </div>
+              )}
             </div>
           </div>
         </div>

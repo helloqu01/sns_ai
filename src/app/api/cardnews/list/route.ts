@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db, isFirebaseConfigured } from "@/lib/firebase-admin";
 import { getFirebaseAdmin } from "@/lib/firebase-admin-helpers";
+import { resolveUidFromRequest } from "@/lib/api-auth";
 import { getUserCardnewsCollection } from "@/lib/firestore-cardnews";
 import { getCardnewsListCache, setCardnewsListCache } from "@/lib/services/cardnews-list-cache";
 
@@ -32,15 +33,6 @@ const asStatus = (value: unknown): CardnewsStatus => (value === "published" ? "p
 
 const asNumber = (value: unknown, fallback = 0) => (typeof value === "number" && Number.isFinite(value) ? value : fallback);
 
-const getUidFromRequest = async (req: NextRequest) => {
-  const authHeader = req.headers.get("authorization") || "";
-  const idToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-  if (!idToken) return null;
-  const admin = getFirebaseAdmin();
-  if (!admin) return null;
-  const decoded = await admin.auth().verifyIdToken(idToken);
-  return decoded.uid;
-};
 
 const parseLimit = (value: string | null, fallback = 10) => {
   const parsed = Number.parseInt(value || "", 10);
@@ -72,7 +64,7 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const uid = await getUidFromRequest(req);
+    const uid = await resolveUidFromRequest(req);
     if (!uid) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }

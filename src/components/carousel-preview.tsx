@@ -69,7 +69,7 @@ const getSlideTextOffset = (slide: Slide, index: number) => {
                 : 50;
 
     return {
-        x: typeof slide.textOffsetX === "number" ? clamp(slide.textOffsetX, 8, 92) : 38,
+        x: typeof slide.textOffsetX === "number" ? clamp(slide.textOffsetX, 8, 92) : 50,
         y: typeof slide.textOffsetY === "number" ? clamp(slide.textOffsetY, 10, 90) : fallbackY,
     };
 };
